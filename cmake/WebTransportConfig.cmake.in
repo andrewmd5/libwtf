@@ -1,0 +1,22 @@
+@PACKAGE_INIT@
+
+include(CMakeFindDependencyMacro)
+
+# Find required dependencies
+if(WIN32)
+    # Windows dependencies are usually available
+else()
+    find_dependency(Threads)
+    
+    # Try to find MsQuic
+    find_dependency(PkgConfig)
+    if(PkgConfig_FOUND)
+        pkg_check_modules(MsQuic REQUIRED libmsquic)
+    endif()
+endif()
+
+# Include the targets file
+include("${CMAKE_CURRENT_LIST_DIR}/WebTransportTargets.cmake")
+
+# Check if the requested components are available
+check_required_components(WebTransport)

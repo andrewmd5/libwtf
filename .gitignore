@@ -1,0 +1,174 @@
+# Build directories
+build/
+build-*/
+out/
+cmake-build-*/
+
+# CMake
+/.cache
+CMakeCache.txt
+CMakeFiles/
+CMakeScripts/
+Testing/
+Makefile
+cmake_install.cmake
+install_manifest.txt
+compile_commands.json
+CTestTestfile.cmake
+_deps/
+
+# Generated files
+*.user
+*.vcxproj.user
+*.vcxproj.filters
+*.sln.docstates
+
+# Build outputs
+*.exe
+*.dll
+*.so
+*.dylib
+*.a
+*.lib
+*.pdb
+*.ilk
+*.exp
+*.map
+
+# OS files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+*~
+
+# IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+*.tmp
+*.temp
+
+# Visual Studio
+.vs/
+*.suo
+*.user
+*.userosscache
+*.sln.docstates
+*.userprefs
+[Dd]ebug/
+[Dd]ebugPublic/
+[Rr]elease/
+[Rr]eleases/
+x64/
+x86/
+[Aa][Rr][Mm]/
+[Aa][Rr][Mm]64/
+bld/
+[Bb]in/
+[Oo]bj/
+[Ll]og/
+
+# MSTest test Results
+[Tt]est[Rr]esult*/
+[Bb]uild[Ll]og.*
+
+# NUNIT
+*.VisualState.xml
+TestResult.xml
+
+# Logs
+*.log
+*.tlog
+
+# Runtime files
+*.pid
+core
+core.*
+
+# Test artifacts
+*.gcda
+*.gcno
+*.gcov
+coverage.info
+coverage/
+
+# Valgrind
+*.memcheck
+*.helgrind
+*.callgrind
+
+# AddressSanitizer
+asan.*
+
+# Package files
+*.deb
+*.rpm
+*.tar.gz
+*.zip
+
+# Documentation
+docs/html/
+docs/latex/
+
+# Certificates (don't commit real certs)
+*.pem
+*.key
+*.crt
+*.p12
+*.pfx
+
+# But allow test certificates
+!samples/certs/
+!tests/certs/
+
+# Temporary files
+.tmp/
+temp/
+
+# Editor backups
+*~
+*.bak
+*.backup
+
+# Python (if using Python scripts)
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Rust (if using Rust bindings)
+target/
+Cargo.lock
+
+# Node.js (if using JS/TS tools)
+node_modules/
+npm-debug.log*
+
+# Local environment
+.env
+.env.local
+
+# Profiling data
+perf.data*
+gmon.out
+
+# Benchmark results
+bench_results/
+*.bench
+
+# Fuzzing
+fuzz-*/
+*.fuzz
+
+# Static analysis
+scan-build/
+*.clang-tidy
+
+# Package config
+*.pc
+.cache

@@ -1,0 +1,13 @@
+#ifndef WTF_VERSION_H_
+#define WTF_VERSION_H_
+
+/* Generated version information from Git */
+#define WTF_VERSION "@WTF_VERSION@"
+#define WTF_VERSION_MAJOR @PROJECT_VERSION_MAJOR@
+#define WTF_VERSION_MINOR @PROJECT_VERSION_MINOR@
+#define WTF_VERSION_PATCH @PROJECT_VERSION_PATCH@
+
+/* Build information */
+#define WTF_BUILD_TYPE "@CMAKE_BUILD_TYPE@"
+
+#endif /* WTF_VERSION_H_ */

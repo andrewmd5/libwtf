@@ -1,0 +1,1374 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>WebTransport Control Panel</title>
+    <style>
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+        }
+
+        body {
+            font-family: 'JetBrains Mono', 'Fira Code', 'Courier New', monospace;
+            background-color: #fafafa;
+            color: #1a1a1a;
+            line-height: 1.5;
+            font-size: 13px;
+        }
+
+        .container {
+            max-width: 1600px;
+            margin: 0 auto;
+            padding: 24px;
+        }
+
+        .header {
+            background: #ffffff;
+            border: 2px solid #000000;
+            padding: 24px;
+            margin-bottom: 24px;
+        }
+
+        .header h1 {
+            font-size: 18px;
+            font-weight: 700;
+            margin-bottom: 8px;
+            letter-spacing: 0.5px;
+        }
+
+        .header .subtitle {
+            font-size: 12px;
+            color: #666666;
+            font-weight: 400;
+        }
+
+        .main-grid {
+            display: grid;
+            grid-template-columns: 320px 1fr;
+            gap: 24px;
+        }
+
+        .sidebar {
+            background: #ffffff;
+            border: 2px solid #000000;
+            padding: 24px;
+            height: fit-content;
+        }
+
+        .sidebar-section {
+            margin-bottom: 32px;
+        }
+
+        .sidebar-section:last-child {
+            margin-bottom: 0;
+        }
+
+        .sidebar-section h3 {
+            font-size: 14px;
+            font-weight: 700;
+            margin-bottom: 16px;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            border-bottom: 1px solid #000000;
+            padding-bottom: 8px;
+        }
+
+        .connection-status {
+            padding: 16px;
+            text-align: center;
+            font-weight: 700;
+            font-size: 12px;
+            letter-spacing: 0.5px;
+            border: 2px solid #000000;
+            margin-bottom: 16px;
+        }
+
+        .status-disconnected {
+            background-color: #ffebee;
+            color: #c62828;
+        }
+
+        .status-connecting {
+            background-color: #fff3e0;
+            color: #ef6c00;
+        }
+
+        .status-connected {
+            background-color: #e8f5e8;
+            color: #2e7d32;
+        }
+
+        .form-group {
+            margin-bottom: 16px;
+        }
+
+        .form-group label {
+            display: block;
+            font-size: 11px;
+            font-weight: 600;
+            margin-bottom: 6px;
+            text-transform: uppercase;
+            letter-spacing: 0.3px;
+            color: #333333;
+        }
+
+        .form-group input {
+            width: 100%;
+            padding: 8px 12px;
+            border: 1px solid #000000;
+            background: #ffffff;
+            font-family: inherit;
+            font-size: 12px;
+        }
+
+        .form-group input:focus {
+            outline: none;
+            border-color: #2196f3;
+            box-shadow: 0 0 0 2px rgba(33, 150, 243, 0.2);
+        }
+
+        .btn-group {
+            display: flex;
+            gap: 8px;
+            margin-bottom: 16px;
+        }
+
+        button {
+            padding: 10px 16px;
+            border: 2px solid #000000;
+            background: #ffffff;
+            font-family: inherit;
+            font-size: 11px;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.3px;
+            cursor: pointer;
+            transition: background-color 0.2s;
+        }
+
+        button:hover:not(:disabled) {
+            background: #f5f5f5;
+        }
+
+        button:disabled {
+            background: #e0e0e0;
+            cursor: not-allowed;
+            opacity: 0.6;
+        }
+
+        button.primary {
+            background: #000000;
+            color: #ffffff;
+        }
+
+        button.primary:hover:not(:disabled) {
+            background: #333333;
+        }
+
+        .stats-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 8px;
+        }
+
+        .stat-item {
+            border: 1px solid #000000;
+            padding: 12px;
+            text-align: center;
+        }
+
+        .stat-label {
+            font-size: 9px;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.3px;
+            margin-bottom: 4px;
+            color: #666666;
+        }
+
+        .stat-value {
+            font-size: 16px;
+            font-weight: 700;
+        }
+
+        .main-content {
+            background: #ffffff;
+            border: 2px solid #000000;
+            padding: 24px;
+        }
+
+        .test-section {
+            margin-bottom: 40px;
+            padding-bottom: 32px;
+            border-bottom: 1px solid #e0e0e0;
+        }
+
+        .test-section:last-child {
+            border-bottom: none;
+            margin-bottom: 0;
+        }
+
+        .test-section h2 {
+            font-size: 16px;
+            font-weight: 700;
+            margin-bottom: 16px;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+
+        .section-number {
+            color: #666666;
+            margin-right: 8px;
+        }
+
+        .test-controls {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 12px;
+            margin-bottom: 16px;
+            align-items: center;
+        }
+
+        .test-controls input,
+        .test-controls select {
+            padding: 6px 10px;
+            border: 1px solid #000000;
+            background: #ffffff;
+            font-family: inherit;
+            font-size: 12px;
+            min-width: 120px;
+        }
+
+        .log-container {
+            border: 1px solid #000000;
+            background: #f8f8f8;
+            height: 240px;
+            overflow-y: auto;
+            font-size: 11px;
+        }
+
+        .log-entry {
+            padding: 4px 8px;
+            border-bottom: 1px solid #e0e0e0;
+            font-family: 'JetBrains Mono', monospace;
+        }
+
+        .log-entry:last-child {
+            border-bottom: none;
+        }
+
+        .log-timestamp {
+            color: #666666;
+            margin-right: 8px;
+        }
+
+        .log-send {
+            color: #1976d2;
+        }
+
+        .log-receive {
+            color: #388e3c;
+        }
+
+        .log-error {
+            color: #d32f2f;
+            background: #ffebee;
+        }
+
+        .log-info {
+            color: #333333;
+        }
+
+        .stream-list {
+            border: 1px solid #000000;
+            margin-top: 16px;
+        }
+
+        .stream-item {
+            padding: 12px;
+            border-bottom: 1px solid #e0e0e0;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .stream-item:last-child {
+            border-bottom: none;
+        }
+
+        .stream-info {
+            display: flex;
+            flex-direction: column;
+            gap: 4px;
+        }
+
+        .stream-id {
+            font-weight: 700;
+            font-size: 12px;
+        }
+
+        .stream-type {
+            font-size: 10px;
+            color: #666666;
+            text-transform: uppercase;
+        }
+
+        .stream-actions {
+            display: flex;
+            gap: 8px;
+        }
+
+        .stream-actions button {
+            padding: 4px 8px;
+            font-size: 10px;
+        }
+
+        .performance-metrics {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+            gap: 12px;
+            margin-top: 16px;
+        }
+
+        .metric-card {
+            border: 1px solid #000000;
+            padding: 12px;
+        }
+
+        .metric-label {
+            font-size: 10px;
+            font-weight: 600;
+            text-transform: uppercase;
+            color: #666666;
+            margin-bottom: 4px;
+        }
+
+        .metric-value {
+            font-size: 14px;
+            font-weight: 700;
+        }
+
+        .metric-unit {
+            font-size: 10px;
+            color: #666666;
+            margin-left: 2px;
+        }
+
+        .advanced-controls {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 16px;
+            margin-top: 16px;
+        }
+
+        .control-group {
+            border: 1px solid #000000;
+            padding: 16px;
+        }
+
+        .control-group h4 {
+            font-size: 12px;
+            font-weight: 700;
+            margin-bottom: 12px;
+            text-transform: uppercase;
+        }
+
+        .checkbox-group {
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+        }
+
+        .checkbox-item {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .checkbox-item input[type="checkbox"] {
+            width: 16px;
+            height: 16px;
+        }
+
+        .checkbox-item label {
+            font-size: 11px;
+            text-transform: none;
+            letter-spacing: 0;
+            color: #333333;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>WebTransport Control Panel</h1>
+            <div class="subtitle">Protocol Testing & Validation Suite</div>
+        </div>
+
+        <div class="main-grid">
+            <div class="sidebar">
+                <div class="sidebar-section">
+                    <h3>Connection</h3>
+                    <div class="connection-status status-disconnected" id="connectionStatus">
+                        DISCONNECTED
+                    </div>
+                    <div class="form-group">
+                        <label>Server URL</label>
+                        <input type="text" id="serverUrl" value="https://localhost:4433/">
+                    </div>
+                    <div class="form-group">
+                        <label>Certificate Hash (SHA-256)</label>
+                        <input type="text" id="certHash" value="0843f241f0c1890b5eb8b6fd8f8bb23ad48168f839a7ca4ad423ef31c3ec983c">
+                    </div>
+                    <div class="btn-group">
+                        <button id="connectBtn" class="primary" onclick="connect()">Connect</button>
+                        <button id="disconnectBtn" onclick="disconnect()" disabled>Disconnect</button>
+                    </div>
+                </div>
+
+                <div class="sidebar-section">
+                    <h3>Statistics</h3>
+                    <div class="stats-grid">
+                        <div class="stat-item">
+                            <div class="stat-label">Bidir Streams</div>
+                            <div class="stat-value" id="bidirCount">0</div>
+                        </div>
+                        <div class="stat-item">
+                            <div class="stat-label">Unidir Streams</div>
+                            <div class="stat-value" id="unidirCount">0</div>
+                        </div>
+                        <div class="stat-item">
+                            <div class="stat-label">Active Streams</div>
+                            <div class="stat-value" id="activeStreams">0</div>
+                        </div>
+                        <div class="stat-item">
+                            <div class="stat-label">Datagrams</div>
+                            <div class="stat-value" id="datagramCount">0</div>
+                        </div>
+                        <div class="stat-item">
+                            <div class="stat-label">Bytes Sent</div>
+                            <div class="stat-value" id="bytesSent">0</div>
+                        </div>
+                        <div class="stat-item">
+                            <div class="stat-label">Bytes Received</div>
+                            <div class="stat-value" id="bytesReceived">0</div>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="sidebar-section">
+                    <h3>Session Control</h3>
+                    <div class="btn-group">
+                        <button onclick="clearAllLogs()">Clear Logs</button>
+                        <button onclick="exportLogs()">Export</button>
+                    </div>
+                </div>
+            </div>
+
+            <div class="main-content">
+                <div class="test-section">
+                    <h2><span class="section-number">01.</span>Bidirectional Streams</h2>
+                    <div class="test-controls">
+                        <button onclick="createBidirStream()">Create Stream</button>
+                        <input type="text" id="bidirMessage" placeholder="Message content" value="Hello BiDir Stream!">
+                        <button onclick="sendBidirMessage()">Send Message</button>
+                        <button onclick="closeBidirStream()">Close Stream</button>
+                    </div>
+                    <div class="log-container" id="bidirLog"></div>
+                    <div class="stream-list" id="bidirStreams"></div>
+                </div>
+
+                <div class="test-section">
+                    <h2><span class="section-number">02.</span>Unidirectional Streams</h2>
+                    <div class="test-controls">
+                        <button onclick="createUnidirStream()">Create Stream</button>
+                        <input type="text" id="unidirMessage" placeholder="Message content" value="Hello UniDir Stream!">
+                        <button onclick="sendUnidirMessage()">Send Message</button>
+                        <select id="dataSize">
+                            <option value="100">100 bytes</option>
+                            <option value="1024" selected>1 KB</option>
+                            <option value="10240">10 KB</option>
+                            <option value="102400">100 KB</option>
+                        </select>
+                        <button onclick="sendLargeData()">Send Bulk Data</button>
+                    </div>
+                    <div class="log-container" id="unidirLog"></div>
+                    <div class="stream-list" id="unidirStreams"></div>
+                </div>
+
+                <div class="test-section">
+                    <h2><span class="section-number">03.</span>Datagram Transport</h2>
+                    <div class="test-controls">
+                        <input type="text" id="datagramMessage" placeholder="Datagram content" value="Hello Datagram!">
+                        <button onclick="sendDatagram()">Send Single</button>
+                        <select id="burstCount">
+                            <option value="10">10 messages</option>
+                            <option value="50" selected>50 messages</option>
+                            <option value="100">100 messages</option>
+                            <option value="500">500 messages</option>
+                        </select>
+                        <button onclick="sendDatagramBurst()">Send Burst</button>
+                    </div>
+                    <div class="log-container" id="datagramLog"></div>
+                    <div class="performance-metrics">
+                        <div class="metric-card">
+                            <div class="metric-label">Send Rate</div>
+                            <div class="metric-value" id="sendRate">0<span class="metric-unit">msg/s</span></div>
+                        </div>
+                        <div class="metric-card">
+                            <div class="metric-label">Receive Rate</div>
+                            <div class="metric-value" id="receiveRate">0<span class="metric-unit">msg/s</span></div>
+                        </div>
+                        <div class="metric-card">
+                            <div class="metric-label">Round Trip</div>
+                            <div class="metric-value" id="roundTrip">0<span class="metric-unit">ms</span></div>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="test-section">
+                    <h2><span class="section-number">04.</span>Server-Initiated Streams</h2>
+                    <div class="test-controls">
+                        <button onclick="requestServerStream()">Request Server Stream</button>
+                        <select id="serverStreamType">
+                            <option value="bidirectional">Bidirectional</option>
+                            <option value="unidirectional">Unidirectional</option>
+                        </select>
+                    </div>
+                    <div class="log-container" id="serverStreamLog"></div>
+                    <div class="stream-list" id="serverStreams"></div>
+                </div>
+
+                <div class="test-section">
+                    <h2><span class="section-number">05.</span>Advanced Testing</h2>
+                    <div class="advanced-controls">
+                        <div class="control-group">
+                            <h4>Stream Testing</h4>
+                            <div class="checkbox-group">
+                                <div class="checkbox-item">
+                                    <input type="checkbox" id="autoReconnect">
+                                    <label for="autoReconnect">Auto-reconnect streams</label>
+                                </div>
+                                <div class="checkbox-item">
+                                    <input type="checkbox" id="logBinary">
+                                    <label for="logBinary">Log binary data</label>
+                                </div>
+                                <div class="checkbox-item">
+                                    <input type="checkbox" id="measureLatency">
+                                    <label for="measureLatency">Measure latency</label>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="control-group">
+                            <h4>Performance</h4>
+                            <div class="checkbox-group">
+                                <div class="checkbox-item">
+                                    <input type="checkbox" id="highFrequency">
+                                    <label for="highFrequency">High frequency mode</label>
+                                </div>
+                                <div class="checkbox-item">
+                                    <input type="checkbox" id="batchMessages">
+                                    <label for="batchMessages">Batch messages</label>
+                                </div>
+                                <div class="checkbox-item">
+                                    <input type="checkbox" id="compressionTest">
+                                    <label for="compressionTest">Test compression</label>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="btn-group">
+                        <button onclick="runStressTest()">Run Stress Test</button>
+                        <button onclick="runLatencyTest()">Latency Test</button>
+                        <button onclick="runThroughputTest()">Throughput Test</button>
+                    </div>
+                </div>
+
+                <div class="test-section">
+                    <h2><span class="section-number">06.</span>System Log</h2>
+                    <div class="log-container" id="systemLog"></div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // Polyfill for Uint8Array.fromHex
+        if (!Uint8Array.fromHex) {
+            Uint8Array.fromHex = function (hexString) {
+                const cleanHex = hexString.replace(/\s/g, '');
+                if (cleanHex.length % 2 !== 0) {
+                    throw new Error('Invalid hex string: odd number of characters');
+                }
+                if (!/^[0-9a-fA-F]*$/.test(cleanHex)) {
+                    throw new Error('Invalid hex string: contains non-hex characters');
+                }
+                const bytes = new Uint8Array(cleanHex.length / 2);
+                for (let i = 0; i < cleanHex.length; i += 2) {
+                    bytes[i / 2] = parseInt(cleanHex.substr(i, 2), 16);
+                }
+                return bytes;
+            };
+        }
+
+        // Global state
+        let webTransport = null;
+        let isConnected = false;
+        let bidirStreams = new Map();
+        let unidirStreams = new Map();
+        let serverStreams = new Map();
+        let nextStreamId = 1;
+
+        let stats = {
+            bidirCount: 0,
+            unidirCount: 0,
+            activeStreams: 0,
+            datagramCount: 0,
+            bytesSent: 0,
+            bytesReceived: 0
+        };
+
+        let performanceMetrics = {
+            sendRate: 0,
+            receiveRate: 0,
+            roundTrip: 0,
+            lastSendTime: 0,
+            lastReceiveTime: 0
+        };
+
+        // Logging functions
+        function addLog(logId, message, type = 'info') {
+            const timestamp = new Date().toLocaleTimeString();
+            const logElement = document.getElementById(logId);
+            const entry = document.createElement('div');
+            entry.className = `log-entry log-${type}`;
+            entry.innerHTML = `<span class="log-timestamp">[${timestamp}]</span> ${message}`;
+            logElement.appendChild(entry);
+            logElement.scrollTop = logElement.scrollHeight;
+            
+            // Also log to system log
+            if (logId !== 'systemLog') {
+                addLog('systemLog', `${logId.replace('Log', '').toUpperCase()}: ${message}`, type);
+            }
+        }
+
+        function updateStats() {
+            document.getElementById('bidirCount').textContent = stats.bidirCount;
+            document.getElementById('unidirCount').textContent = stats.unidirCount;
+            document.getElementById('activeStreams').textContent = stats.activeStreams;
+            document.getElementById('datagramCount').textContent = stats.datagramCount;
+            document.getElementById('bytesSent').textContent = formatBytes(stats.bytesSent);
+            document.getElementById('bytesReceived').textContent = formatBytes(stats.bytesReceived);
+        }
+
+        function updatePerformanceMetrics() {
+            document.getElementById('sendRate').innerHTML = `${performanceMetrics.sendRate}<span class="metric-unit">msg/s</span>`;
+            document.getElementById('receiveRate').innerHTML = `${performanceMetrics.receiveRate}<span class="metric-unit">msg/s</span>`;
+            document.getElementById('roundTrip').innerHTML = `${performanceMetrics.roundTrip}<span class="metric-unit">ms</span>`;
+        }
+
+        function formatBytes(bytes) {
+            if (bytes === 0) return '0';
+            const k = 1024;
+            const sizes = ['B', 'KB', 'MB', 'GB'];
+            const i = Math.floor(Math.log(bytes) / Math.log(k));
+            return Math.round((bytes / Math.pow(k, i)) * 100) / 100 + sizes[i];
+        }
+
+        function updateConnectionStatus(status) {
+            const statusElement = document.getElementById('connectionStatus');
+            const connectBtn = document.getElementById('connectBtn');
+            const disconnectBtn = document.getElementById('disconnectBtn');
+            
+            statusElement.className = `connection-status status-${status}`;
+            
+            switch (status) {
+                case 'disconnected':
+                    statusElement.textContent = 'DISCONNECTED';
+                    connectBtn.disabled = false;
+                    disconnectBtn.disabled = true;
+                    isConnected = false;
+                    break;
+                case 'connecting':
+                    statusElement.textContent = 'CONNECTING';
+                    connectBtn.disabled = true;
+                    disconnectBtn.disabled = true;
+                    break;
+                case 'connected':
+                    statusElement.textContent = 'CONNECTED';
+                    connectBtn.disabled = true;
+                    disconnectBtn.disabled = false;
+                    isConnected = true;
+                    break;
+            }
+        }
+
+        // Connection functions
+        async function connect() {
+            try {
+                updateConnectionStatus('connecting');
+                addLog('systemLog', 'Initiating WebTransport connection', 'info');
+                
+                const url = document.getElementById('serverUrl').value;
+                const hashHex = document.getElementById('certHash').value;
+                const hashBytes = Uint8Array.fromHex(hashHex);
+                
+                webTransport = new WebTransport(url, {
+                    allowPooling: false,
+                    serverCertificateHashes: [{
+                        algorithm: "sha-256",
+                        value: hashBytes.buffer,
+                    }],
+                });
+
+                await webTransport.ready;
+                updateConnectionStatus('connected');
+                addLog('systemLog', 'WebTransport connection established successfully', 'info');
+                
+                setupDatagramReader();
+                setupIncomingStreamReader();
+                
+            } catch (error) {
+                updateConnectionStatus('disconnected');
+                addLog('systemLog', `Connection failed: ${error.message}`, 'error');
+            }
+        }
+
+        async function disconnect() {
+            if (webTransport) {
+                try {
+                    // Close all active streams
+                    bidirStreams.clear();
+                    unidirStreams.clear();
+                    serverStreams.clear();
+                    updateStreamLists();
+                    
+                    await webTransport.close();
+                } catch (error) {
+                    addLog('systemLog', `Disconnect error: ${error.message}`, 'error');
+                }
+                webTransport = null;
+            }
+            updateConnectionStatus('disconnected');
+            addLog('systemLog', 'WebTransport disconnected', 'info');
+            
+            // Reset stats
+            stats.activeStreams = 0;
+            updateStats();
+        }
+
+        // Bidirectional stream functions
+        async function createBidirStream() {
+            if (!isConnected) {
+                addLog('bidirLog', 'Not connected to server', 'error');
+                return;
+            }
+
+            try {
+                const stream = await webTransport.createBidirectionalStream();
+                const streamId = `bidir-${nextStreamId++}`;
+                
+                bidirStreams.set(streamId, {
+                    stream: stream,
+                    reader: null,
+                    writer: null,
+                    created: Date.now()
+                });
+                
+                stats.bidirCount++;
+                stats.activeStreams++;
+                updateStats();
+                updateStreamLists();
+                
+                addLog('bidirLog', `Created bidirectional stream: ${streamId}`, 'info');
+                setupStreamReader(streamId, stream, 'bidirLog');
+                
+            } catch (error) {
+                addLog('bidirLog', `Failed to create stream: ${error.message}`, 'error');
+            }
+        }
+
+        async function sendBidirMessage() {
+            if (bidirStreams.size === 0) {
+                addLog('bidirLog', 'No active bidirectional streams', 'error');
+                return;
+            }
+
+            const message = document.getElementById('bidirMessage').value;
+            if (!message) {
+                addLog('bidirLog', 'Message content is empty', 'error');
+                return;
+            }
+
+            // Send to the most recent stream
+            const streamEntry = Array.from(bidirStreams.values()).pop();
+            try {
+                const data = new TextEncoder().encode(message);
+                const writer = streamEntry.stream.writable.getWriter();
+                
+                await writer.write(data);
+                writer.releaseLock();
+                
+                stats.bytesSent += data.length;
+                updateStats();
+                addLog('bidirLog', `Sent: ${message} (${data.length} bytes)`, 'send');
+                
+            } catch (error) {
+                addLog('bidirLog', `Send failed: ${error.message}`, 'error');
+            }
+        }
+
+        async function closeBidirStream() {
+            if (bidirStreams.size === 0) {
+                addLog('bidirLog', 'No active bidirectional streams to close', 'error');
+                return;
+            }
+
+            // Close the most recent stream
+            const streamId = Array.from(bidirStreams.keys()).pop();
+            const streamEntry = bidirStreams.get(streamId);
+            
+            try {
+                await streamEntry.stream.writable.close();
+                bidirStreams.delete(streamId);
+                stats.activeStreams--;
+                updateStats();
+                updateStreamLists();
+                addLog('bidirLog', `Closed stream: ${streamId}`, 'info');
+                
+            } catch (error) {
+                addLog('bidirLog', `Failed to close stream: ${error.message}`, 'error');
+            }
+        }
+
+        // Unidirectional stream functions
+        async function createUnidirStream() {
+            if (!isConnected) {
+                addLog('unidirLog', 'Not connected to server', 'error');
+                return;
+            }
+
+            try {
+                const stream = await webTransport.createUnidirectionalStream();
+                const streamId = `unidir-${nextStreamId++}`;
+                
+                unidirStreams.set(streamId, {
+                    stream: stream,
+                    writer: null,
+                    created: Date.now()
+                });
+                
+                stats.unidirCount++;
+                stats.activeStreams++;
+                updateStats();
+                updateStreamLists();
+                
+                addLog('unidirLog', `Created unidirectional stream: ${streamId}`, 'info');
+                
+            } catch (error) {
+                addLog('unidirLog', `Failed to create stream: ${error.message}`, 'error');
+            }
+        }
+
+        async function sendUnidirMessage() {
+            if (unidirStreams.size === 0) {
+                addLog('unidirLog', 'No active unidirectional streams', 'error');
+                return;
+            }
+
+            const message = document.getElementById('unidirMessage').value;
+            if (!message) {
+                addLog('unidirLog', 'Message content is empty', 'error');
+                return;
+            }
+
+            // Send to the most recent stream
+            const streamEntry = Array.from(unidirStreams.values()).pop();
+            try {
+                const data = new TextEncoder().encode(message);
+                const writer = streamEntry.stream.getWriter();
+                
+                await writer.write(data);
+                writer.releaseLock();
+                
+                stats.bytesSent += data.length;
+                updateStats();
+                addLog('unidirLog', `Sent: ${message} (${data.length} bytes)`, 'send');
+                
+            } catch (error) {
+                addLog('unidirLog', `Send failed: ${error.message}`, 'error');
+            }
+        }
+
+        async function sendLargeData() {
+            if (unidirStreams.size === 0) {
+                await createUnidirStream();
+            }
+
+            const size = parseInt(document.getElementById('dataSize').value);
+            const streamEntry = Array.from(unidirStreams.values()).pop();
+            
+            try {
+                // Generate random data
+                const data = new Uint8Array(size);
+                crypto.getRandomValues(data);
+                
+                const writer = streamEntry.stream.getWriter();
+                await writer.write(data);
+                writer.releaseLock();
+                
+                stats.bytesSent += data.length;
+                updateStats();
+                addLog('unidirLog', `Sent bulk data: ${formatBytes(size)}`, 'send');
+                
+            } catch (error) {
+                addLog('unidirLog', `Bulk send failed: ${error.message}`, 'error');
+            }
+        }
+
+        // Datagram functions
+        async function setupDatagramReader() {
+            if (!webTransport || !webTransport.datagrams) return;
+            
+            const reader = webTransport.datagrams.readable.getReader();
+            
+            try {
+                while (true) {
+                    const { value, done } = await reader.read();
+                    if (done) {
+                        addLog('datagramLog', 'Datagram reader closed', 'info');
+                        break;
+                    }
+                    
+                    const message = new TextDecoder().decode(value);
+                    stats.bytesReceived += value.length;
+                    stats.datagramCount++;
+                    
+                    // Update performance metrics
+                    const now = Date.now();
+                    if (performanceMetrics.lastReceiveTime > 0) {
+                        const timeDiff = now - performanceMetrics.lastReceiveTime;
+                        performanceMetrics.receiveRate = Math.round(1000 / timeDiff);
+                    }
+                    performanceMetrics.lastReceiveTime = now;
+                    
+                    updateStats();
+                    updatePerformanceMetrics();
+                    addLog('datagramLog', `Received: ${message}`, 'receive');
+                }
+            } catch (error) {
+                addLog('datagramLog', `Datagram read error: ${error.message}`, 'error');
+            } finally {
+                reader.releaseLock();
+            }
+        }
+
+        async function sendDatagram() {
+            if (!isConnected || !webTransport.datagrams) {
+                addLog('datagramLog', 'Not connected or datagrams not supported', 'error');
+                return;
+            }
+
+            const message = document.getElementById('datagramMessage').value;
+            if (!message) {
+                addLog('datagramLog', 'Message content is empty', 'error');
+                return;
+            }
+
+            try {
+                const data = new TextEncoder().encode(message);
+                const writer = webTransport.datagrams.writable.getWriter();
+                
+                const sendTime = Date.now();
+                await writer.write(data);
+                writer.releaseLock();
+                
+                // Update performance metrics
+                if (performanceMetrics.lastSendTime > 0) {
+                    const timeDiff = sendTime - performanceMetrics.lastSendTime;
+                    performanceMetrics.sendRate = Math.round(1000 / timeDiff);
+                }
+                performanceMetrics.lastSendTime = sendTime;
+                
+                stats.bytesSent += data.length;
+                updateStats();
+                updatePerformanceMetrics();
+                addLog('datagramLog', `Sent: ${message}`, 'send');
+                
+            } catch (error) {
+                addLog('datagramLog', `Send failed: ${error.message}`, 'error');
+            }
+        }
+
+        async function sendDatagramBurst() {
+            if (!isConnected || !webTransport.datagrams) {
+                addLog('datagramLog', 'Not connected or datagrams not supported', 'error');
+                return;
+            }
+
+            const count = parseInt(document.getElementById('burstCount').value);
+            const baseMessage = document.getElementById('datagramMessage').value;
+            
+            addLog('datagramLog', `Starting burst test: ${count} messages`, 'info');
+            
+            try {
+                const writer = webTransport.datagrams.writable.getWriter();
+                const startTime = Date.now();
+                
+                for (let i = 0; i < count; i++) {
+                    const message = `${baseMessage} #${i + 1}`;
+                    const data = new TextEncoder().encode(message);
+                    
+                    await writer.write(data);
+                    stats.bytesSent += data.length;
+                    
+                    if ((i + 1) % 50 === 0) {
+                        updateStats();
+                        addLog('datagramLog', `Progress: ${i + 1}/${count} messages sent`, 'info');
+                        // Small delay to prevent overwhelming
+                        await new Promise(resolve => setTimeout(resolve, 1));
+                    }
+                }
+                
+                writer.releaseLock();
+                const duration = Date.now() - startTime;
+                const rate = Math.round((count * 1000) / duration);
+                
+                updateStats();
+                addLog('datagramLog', `Burst completed: ${count} messages in ${duration}ms (${rate} msg/s)`, 'info');
+                
+            } catch (error) {
+                addLog('datagramLog', `Burst test failed: ${error.message}`, 'error');
+            }
+        }
+
+        // Server-initiated streams
+        async function setupIncomingStreamReader() {
+            if (!webTransport) return;
+            
+            const reader = webTransport.incomingBidirectionalStreams.getReader();
+            
+            try {
+                while (true) {
+                    const { value, done } = await reader.read();
+                    if (done) {
+                        addLog('serverStreamLog', 'Incoming stream reader closed', 'info');
+                        break;
+                    }
+                    
+                    const streamId = `server-bidir-${nextStreamId++}`;
+                    serverStreams.set(streamId, {
+                        stream: value,
+                        type: 'bidirectional',
+                        created: Date.now()
+                    });
+                    
+                    stats.activeStreams++;
+                    updateStats();
+                    updateStreamLists();
+                    
+                    addLog('serverStreamLog', `Server opened bidirectional stream: ${streamId}`, 'info');
+                    setupStreamReader(streamId, value, 'serverStreamLog');
+                }
+            } catch (error) {
+                addLog('serverStreamLog', `Incoming stream error: ${error.message}`, 'error');
+            } finally {
+                reader.releaseLock();
+            }
+        }
+
+        async function requestServerStream() {
+            // This would typically require sending a message to the server
+            // requesting it to open a stream. For now, we'll simulate this
+            // by sending a datagram with a special message
+            const streamType = document.getElementById('serverStreamType').value;
+            const requestMessage = `REQUEST_STREAM:${streamType}`;
+            
+            if (!isConnected || !webTransport.datagrams) {
+                addLog('serverStreamLog', 'Not connected or datagrams not supported', 'error');
+                return;
+            }
+
+            try {
+                const data = new TextEncoder().encode(requestMessage);
+                const writer = webTransport.datagrams.writable.getWriter();
+                
+                await writer.write(data);
+                writer.releaseLock();
+                
+                addLog('serverStreamLog', `Requested server stream: ${streamType}`, 'send');
+                
+            } catch (error) {
+                addLog('serverStreamLog', `Stream request failed: ${error.message}`, 'error');
+            }
+        }
+
+        // Stream reader setup
+        async function setupStreamReader(streamId, stream, logId) {
+            if (!stream.readable) return; // Unidirectional outbound stream
+            
+            const reader = stream.readable.getReader();
+            
+            try {
+                while (true) {
+                    const { value, done } = await reader.read();
+                    if (done) {
+                        addLog(logId, `Stream ${streamId} closed by peer`, 'info');
+                        break;
+                    }
+                    
+                    const message = new TextDecoder().decode(value);
+                    stats.bytesReceived += value.length;
+                    updateStats();
+                    addLog(logId, `Received on ${streamId}: ${message}`, 'receive');
+                }
+            } catch (error) {
+                addLog(logId, `Stream ${streamId} read error: ${error.message}`, 'error');
+            } finally {
+                reader.releaseLock();
+            }
+        }
+
+        // Stream list management
+        function updateStreamLists() {
+            updateStreamList('bidirStreams', bidirStreams, 'bidirectional');
+            updateStreamList('unidirStreams', unidirStreams, 'unidirectional');
+            updateStreamList('serverStreams', serverStreams, 'server');
+        }
+
+        function updateStreamList(containerId, streams, type) {
+            const container = document.getElementById(containerId);
+            container.innerHTML = '';
+            
+            if (streams.size === 0) {
+                container.innerHTML = '<div class="stream-item">No active streams</div>';
+                return;
+            }
+            
+            streams.forEach((streamData, streamId) => {
+                const streamItem = document.createElement('div');
+                streamItem.className = 'stream-item';
+                
+                const age = Math.round((Date.now() - streamData.created) / 1000);
+                
+                streamItem.innerHTML = `
+                    <div class="stream-info">
+                        <div class="stream-id">${streamId}</div>
+                        <div class="stream-type">${type} • ${age}s old</div>
+                    </div>
+                    <div class="stream-actions">
+                        <button onclick="closeStream('${streamId}', '${containerId}')">Close</button>
+                    </div>
+                `;
+                
+                container.appendChild(streamItem);
+            });
+        }
+
+        async function closeStream(streamId, containerId) {
+            let streamMap;
+            let logId;
+            
+            switch (containerId) {
+                case 'bidirStreams':
+                    streamMap = bidirStreams;
+                    logId = 'bidirLog';
+                    break;
+                case 'unidirStreams':
+                    streamMap = unidirStreams;
+                    logId = 'unidirLog';
+                    break;
+                case 'serverStreams':
+                    streamMap = serverStreams;
+                    logId = 'serverStreamLog';
+                    break;
+                default:
+                    return;
+            }
+            
+            const streamData = streamMap.get(streamId);
+            if (!streamData) return;
+            
+            try {
+                if (streamData.stream.writable) {
+                    await streamData.stream.writable.close();
+                }
+                streamMap.delete(streamId);
+                stats.activeStreams--;
+                updateStats();
+                updateStreamLists();
+                addLog(logId, `Closed stream: ${streamId}`, 'info');
+                
+            } catch (error) {
+                addLog(logId, `Failed to close stream ${streamId}: ${error.message}`, 'error');
+            }
+        }
+
+        // Advanced testing functions
+        async function runStressTest() {
+            addLog('systemLog', 'Starting stress test', 'info');
+            
+            // Create multiple streams and send data rapidly
+            const promises = [];
+            
+            for (let i = 0; i < 5; i++) {
+                promises.push(createBidirStream());
+                promises.push(createUnidirStream());
+            }
+            
+            await Promise.all(promises);
+            
+            // Send burst of datagrams
+            await sendDatagramBurst();
+            
+            addLog('systemLog', 'Stress test completed', 'info');
+        }
+
+        async function runLatencyTest() {
+            if (!isConnected) {
+                addLog('systemLog', 'Not connected', 'error');
+                return;
+            }
+            
+            addLog('systemLog', 'Starting latency test', 'info');
+            
+            const iterations = 10;
+            const latencies = [];
+            
+            for (let i = 0; i < iterations; i++) {
+                const startTime = performance.now();
+                const message = `PING_${Date.now()}`;
+                
+                try {
+                    const data = new TextEncoder().encode(message);
+                    const writer = webTransport.datagrams.writable.getWriter();
+                    await writer.write(data);
+                    writer.releaseLock();
+                    
+                    // Wait for response (this is simplified - in practice you'd correlate responses)
+                    await new Promise(resolve => setTimeout(resolve, 50));
+                    
+                    const latency = performance.now() - startTime;
+                    latencies.push(latency);
+                    
+                } catch (error) {
+                    addLog('systemLog', `Latency test iteration ${i + 1} failed: ${error.message}`, 'error');
+                }
+            }
+            
+            const avgLatency = latencies.reduce((a, b) => a + b, 0) / latencies.length;
+            performanceMetrics.roundTrip = Math.round(avgLatency);
+            updatePerformanceMetrics();
+            
+            addLog('systemLog', `Latency test completed: ${Math.round(avgLatency)}ms average`, 'info');
+        }
+
+        async function runThroughputTest() {
+            if (!isConnected) {
+                addLog('systemLog', 'Not connected', 'error');
+                return;
+            }
+            
+            addLog('systemLog', 'Starting throughput test', 'info');
+            
+            const testData = new Uint8Array(1024 * 1024); // 1MB
+            crypto.getRandomValues(testData);
+            
+            await createUnidirStream();
+            const streamEntry = Array.from(unidirStreams.values()).pop();
+            
+            const startTime = performance.now();
+            
+            try {
+                const writer = streamEntry.stream.getWriter();
+                
+                // Send data in chunks
+                const chunkSize = 64 * 1024; // 64KB chunks
+                for (let offset = 0; offset < testData.length; offset += chunkSize) {
+                    const end = Math.min(offset + chunkSize, testData.length);
+                    const chunk = testData.slice(offset, end);
+                    await writer.write(chunk);
+                }
+                
+                writer.releaseLock();
+                
+                const duration = performance.now() - startTime;
+                const throughput = (testData.length * 8) / (duration / 1000); // bits per second
+                const mbps = (throughput / (1024 * 1024)).toFixed(2);
+                
+                stats.bytesSent += testData.length;
+                updateStats();
+                
+                addLog('systemLog', `Throughput test completed: ${mbps} Mbps`, 'info');
+                
+            } catch (error) {
+                addLog('systemLog', `Throughput test failed: ${error.message}`, 'error');
+            }
+        }
+
+        // Utility functions
+        function clearAllLogs() {
+            const logIds = ['bidirLog', 'unidirLog', 'datagramLog', 'serverStreamLog', 'systemLog'];
+            logIds.forEach(id => {
+                document.getElementById(id).innerHTML = '';
+            });
+            addLog('systemLog', 'All logs cleared', 'info');
+        }
+
+        function exportLogs() {
+            const logs = {
+                timestamp: new Date().toISOString(),
+                connection: {
+                    url: document.getElementById('serverUrl').value,
+                    status: isConnected ? 'connected' : 'disconnected'
+                },
+                statistics: stats,
+                performance: performanceMetrics,
+                logs: {
+                    bidirectional: document.getElementById('bidirLog').textContent,
+                    unidirectional: document.getElementById('unidirLog').textContent,
+                    datagrams: document.getElementById('datagramLog').textContent,
+                    serverStreams: document.getElementById('serverStreamLog').textContent,
+                    system: document.getElementById('systemLog').textContent
+                },
+                streams: {
+                    bidirectional: Array.from(bidirStreams.keys()),
+                    unidirectional: Array.from(unidirStreams.keys()),
+                    server: Array.from(serverStreams.keys())
+                }
+            };
+            
+            const blob = new Blob([JSON.stringify(logs, null, 2)], { type: 'application/json' });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = `webtransport-session-${Date.now()}.json`;
+            a.click();
+            URL.revokeObjectURL(url);
+            
+            addLog('systemLog', 'Session data exported', 'info');
+        }
+
+        // Initialize
+        updateConnectionStatus('disconnected');
+        updateStats();
+        updatePerformanceMetrics();
+        updateStreamLists();
+        addLog('systemLog', 'WebTransport Control Panel initialized', 'info');
+        
+        // Performance monitoring
+        setInterval(() => {
+            if (performanceMetrics.sendRate > 0) {
+                performanceMetrics.sendRate = Math.max(0, performanceMetrics.sendRate - 1);
+            }
+            if (performanceMetrics.receiveRate > 0) {
+                performanceMetrics.receiveRate = Math.max(0, performanceMetrics.receiveRate - 1);
+            }
+            updatePerformanceMetrics();
+        }, 1000);
+    </script>
+</body>
+</html>
