@@ -5,7 +5,6 @@ out/
 cmake-build-*/
 
 # CMake
-/.cache
 CMakeCache.txt
 CMakeFiles/
 CMakeScripts/
@@ -16,6 +15,7 @@ install_manifest.txt
 compile_commands.json
 CTestTestfile.cmake
 _deps/
+src/wtf_version.h
 
 # Generated files
 *.user
