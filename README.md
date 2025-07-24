@@ -28,9 +28,11 @@ The implementation provides comprehensive error handling with detailed diagnosti
 ## Installation
 
 ```bash
-# Build from source (requires MsQuic)
+# Build from source
 git clone https://github.com/andrewmd5/libwtf.git
 cd libwtf
+mkdir build 
+cd build && cmake ..
 make
 ```
 
