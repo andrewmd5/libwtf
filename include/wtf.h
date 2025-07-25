@@ -9,6 +9,24 @@ extern "C" {
 #include <stddef.h>
 #include <stdint.h>
 
+// #region Export macros
+
+#ifdef _WIN32
+    #ifdef WTF_EXPORTS
+        #define WTF_API __declspec(dllexport)
+    #else
+        #define WTF_API __declspec(dllimport)
+    #endif
+#else
+    #ifdef WTF_EXPORTS
+        #define WTF_API __attribute__((visibility("default")))
+    #else
+        #define WTF_API
+    #endif
+#endif
+
+// #endregion
+
 // #region Forward declarations
 
 //! Forward declarations
@@ -327,55 +345,55 @@ typedef struct {
 
 //! Get library version information
 //! @return pointer to version structure
-wtf_version_info_t *wtf_get_version();
+WTF_API wtf_version_info_t *wtf_get_version();
 
 //! Create a new WebTransport context
 //! @param config context configuration parameters
 //! @param context pointer to receive the created context
 //! @return WTF_SUCCESS on success, error code on failure
-wtf_result_t wtf_context_create(const wtf_context_config_t *config, wtf_context_t **context);
+WTF_API wtf_result_t wtf_context_create(const wtf_context_config_t *config, wtf_context_t **context);
 
 //! Destroy a WebTransport context and cleanup all resources
 //! @param context context to destroy
-void wtf_context_destroy(wtf_context_t *context);
+WTF_API void wtf_context_destroy(wtf_context_t *context);
 
 //! Set global log level for the context
 //! @param context target context
 //! @param level new logging level
 //! @return WTF_SUCCESS on success, error code on failure
-wtf_result_t wtf_context_set_log_level(wtf_context_t *context, wtf_log_level_t level);
+WTF_API wtf_result_t wtf_context_set_log_level(wtf_context_t *context, wtf_log_level_t level);
 
 //! Create a new WebTransport server
 //! @param context parent context for the server
 //! @param config server configuration parameters
 //! @param server pointer to receive the created server
 //! @return WTF_SUCCESS on success, error code on failure
-wtf_result_t wtf_server_create(wtf_context_t *context, const wtf_server_config_t *config, wtf_server_t **server);
+WTF_API wtf_result_t wtf_server_create(wtf_context_t *context, const wtf_server_config_t *config, wtf_server_t **server);
 
 //! Start the server listening for connections
 //! @param server server instance to start
 //! @return WTF_SUCCESS on success, error code on failure
-wtf_result_t wtf_server_start(wtf_server_t *server);
+WTF_API wtf_result_t wtf_server_start(wtf_server_t *server);
 
 //! Stop the server gracefully
 //! @param server server instance to stop
 //! @return WTF_SUCCESS on success, error code on failure
-wtf_result_t wtf_server_stop(wtf_server_t *server);
+WTF_API wtf_result_t wtf_server_stop(wtf_server_t *server);
 
 //! Get current server state
 //! @param server target server instance
 //! @return current operational state
-wtf_server_state_t wtf_server_get_state(wtf_server_t *server);
+WTF_API wtf_server_state_t wtf_server_get_state(wtf_server_t *server);
 
 //! Get server statistics
 //! @param server target server instance
 //! @param stats pointer to statistics structure to fill
 //! @return WTF_SUCCESS on success, error code on failure
-wtf_result_t wtf_server_get_statistics(wtf_server_t *server, wtf_server_statistics_t *stats);
+WTF_API wtf_result_t wtf_server_get_statistics(wtf_server_t *server, wtf_server_statistics_t *stats);
 
 //! Destroy the server and free resources
 //! @param server server instance to destroy
-void wtf_server_destroy(wtf_server_t *server);
+WTF_API void wtf_server_destroy(wtf_server_t *server);
 
 // #endregion
 
@@ -386,43 +404,43 @@ void wtf_server_destroy(wtf_server_t *server);
 //! @param error_code application error code
 //! @param reason human-readable reason for closure
 //! @return WTF_SUCCESS on success, error code on failure
-wtf_result_t wtf_session_close(wtf_session_t *session, uint32_t error_code, const char *reason);
+WTF_API wtf_result_t wtf_session_close(wtf_session_t *session, uint32_t error_code, const char *reason);
 
 //! Drain a session - sends DRAIN_WEBTRANSPORT_SESSION capsule
 //! @param session session to drain
 //! @return WTF_SUCCESS on success, error code on failure
-wtf_result_t wtf_session_drain(wtf_session_t *session);
+WTF_API wtf_result_t wtf_session_drain(wtf_session_t *session);
 
 //! Send a datagram on a session
 //! @param session target session
 //! @param data buffer containing datagram data
 //! @return WTF_SUCCESS on success, error code on failure
 //! @note The data buffer must remain valid until send completion
-wtf_result_t wtf_session_send_datagram(wtf_session_t *session, const wtf_buffer_t *data);
+WTF_API wtf_result_t wtf_session_send_datagram(wtf_session_t *session, const wtf_buffer_t *data);
 
 //! Open a new stream on a session
 //! @param session parent session for the stream
 //! @param type stream type (bidirectional or unidirectional)
 //! @param stream pointer to receive the created stream
 //! @return WTF_SUCCESS on success, error code on failure
-wtf_result_t wtf_session_create_stream(wtf_session_t *session, wtf_stream_type_t type, wtf_stream_t **stream);
+WTF_API wtf_result_t wtf_session_create_stream(wtf_session_t *session, wtf_stream_type_t type, wtf_stream_t **stream);
 
 //! Get session state
 //! @param session target session
 //! @return current session state
-wtf_session_state_t wtf_session_get_state(wtf_session_t *session);
+WTF_API wtf_session_state_t wtf_session_get_state(wtf_session_t *session);
 
 //! Get session peer address
 //! @param session target session
 //! @param address_buffer buffer to receive address data
 //! @param buffer_size pointer to buffer size, updated with actual size
 //! @return WTF_SUCCESS on success, error code on failure
-wtf_result_t wtf_session_get_peer_address(wtf_session_t *session, void *address_buffer, size_t *buffer_size);
+WTF_API wtf_result_t wtf_session_get_peer_address(wtf_session_t *session, void *address_buffer, size_t *buffer_size);
 
 //! Set session user context
 //! @param session target session
 //! @param user_context user-provided context data
-void wtf_session_set_context(wtf_session_t *session, void *user_context);
+WTF_API void wtf_session_set_context(wtf_session_t *session, void *user_context);
 
 // #endregion
 
@@ -434,63 +452,63 @@ void wtf_session_set_context(wtf_session_t *session, void *user_context);
 //! @param buffer_count number of buffers in array
 //! @param fin true if this is the final data
 //! @return WTF_SUCCESS on success, error code on failure
-wtf_result_t wtf_stream_send(wtf_stream_t *stream, const wtf_buffer_t *buffers, size_t buffer_count, bool fin);
+WTF_API wtf_result_t wtf_stream_send(wtf_stream_t *stream, const wtf_buffer_t *buffers, size_t buffer_count, bool fin);
 
 //! Close a stream gracefully (send FIN)
 //! @param stream stream to close
 //! @return WTF_SUCCESS on success, error code on failure
-wtf_result_t wtf_stream_close(wtf_stream_t *stream);
+WTF_API wtf_result_t wtf_stream_close(wtf_stream_t *stream);
 
 //! Abort a stream with error code
 //! @param stream stream to abort
 //! @param error_code application error code
 //! @return WTF_SUCCESS on success, error code on failure
-wtf_result_t wtf_stream_abort(wtf_stream_t *stream, uint32_t error_code);
+WTF_API wtf_result_t wtf_stream_abort(wtf_stream_t *stream, uint32_t error_code);
 
 //! Get the stream ID
 //! @param stream target stream
 //! @param stream_id pointer to receive the stream ID
 //! @return WTF_SUCCESS on success, error code on failure
-wtf_result_t wtf_stream_get_id(wtf_stream_t *stream, uint64_t *stream_id);
+WTF_API wtf_result_t wtf_stream_get_id(wtf_stream_t *stream, uint64_t *stream_id);
 
 //! Set the stream callback
 //! @param stream target stream
 //! @param callback event callback function
-void wtf_stream_set_callback(wtf_stream_t *stream, wtf_stream_callback_t callback);
+WTF_API void wtf_stream_set_callback(wtf_stream_t *stream, wtf_stream_callback_t callback);
 
 //! Set stream user context
 //! @param stream target stream
 //! @param user_context user-provided context data
-void wtf_stream_set_context(wtf_stream_t *stream, void *user_context);
+WTF_API void wtf_stream_set_context(wtf_stream_t *stream, void *user_context);
 
 //! Get stream type
 //! @param stream target stream
 //! @return stream type (bidirectional or unidirectional)
-wtf_stream_type_t wtf_stream_get_type(wtf_stream_t *stream);
+WTF_API wtf_stream_type_t wtf_stream_get_type(wtf_stream_t *stream);
 
 //! Get stream state
 //! @param stream target stream
 //! @return current stream state
-wtf_stream_state_t wtf_stream_get_state(wtf_stream_t *stream);
+WTF_API wtf_stream_state_t wtf_stream_get_state(wtf_stream_t *stream);
 
 //! Set stream priority - higher values indicate higher priority
 //! @param stream target stream
 //! @param priority priority value (higher = more priority)
 //! @return WTF_SUCCESS on success, error code on failure
-wtf_result_t wtf_stream_set_priority(wtf_stream_t *stream, uint16_t priority);
+WTF_API wtf_result_t wtf_stream_set_priority(wtf_stream_t *stream, uint16_t priority);
 
 //! Get stream statistics
 //! @param stream target stream
 //! @param bytes_sent pointer to receive bytes sent count
 //! @param bytes_received pointer to receive bytes received count
 //! @return WTF_SUCCESS on success, error code on failure
-wtf_result_t wtf_stream_get_statistics(wtf_stream_t *stream, uint64_t *bytes_sent, uint64_t *bytes_received);
+WTF_API wtf_result_t wtf_stream_get_statistics(wtf_stream_t *stream, uint64_t *bytes_sent, uint64_t *bytes_received);
 
 //! Enable or disable stream receive operations
 //! @param stream target stream
 //! @param enabled true to enable, false to disable
 //! @return WTF_SUCCESS on success, error code on failure
-wtf_result_t wtf_stream_set_receive_enabled(wtf_stream_t *stream, bool enabled);
+WTF_API wtf_result_t wtf_stream_set_receive_enabled(wtf_stream_t *stream, bool enabled);
 
 // #endregion
 
@@ -501,13 +519,13 @@ wtf_result_t wtf_stream_set_receive_enabled(wtf_stream_t *stream, bool enabled);
 //! @param max_sessions pointer to receive maximum sessions limit
 //! @param current_sessions pointer to receive current session count
 //! @return WTF_SUCCESS on success, error code on failure
-wtf_result_t wtf_connection_get_session_limit(wtf_http3_connection_t *conn, uint32_t *max_sessions,
+WTF_API wtf_result_t wtf_connection_get_session_limit(wtf_http3_connection_t *conn, uint32_t *max_sessions,
                                               uint32_t *current_sessions);
 
 //! Check if connection can accept new sessions
 //! @param conn target connection
 //! @return true if connection can accept new sessions
-bool wtf_connection_can_accept_session(wtf_http3_connection_t *conn);
+WTF_API bool wtf_connection_can_accept_session(wtf_http3_connection_t *conn);
 
 //! Get all active sessions on a connection
 //! @param conn target connection
@@ -515,20 +533,20 @@ bool wtf_connection_can_accept_session(wtf_http3_connection_t *conn);
 //! @param session_count pointer to receive actual session count
 //! @param max_sessions maximum sessions that can fit in array
 //! @return WTF_SUCCESS on success, error code on failure
-wtf_result_t wtf_connection_get_sessions(wtf_http3_connection_t *conn, wtf_session_t **sessions, size_t *session_count,
+WTF_API wtf_result_t wtf_connection_get_sessions(wtf_http3_connection_t *conn, wtf_session_t **sessions, size_t *session_count,
                                          size_t max_sessions);
 
 //! Find session by ID in connection
 //! @param conn target connection
 //! @param session_id ID of session to find
 //! @return session pointer or NULL if not found
-wtf_session_t *wtf_connection_find_session_by_id(wtf_http3_connection_t *conn, uint64_t session_id);
+WTF_API wtf_session_t *wtf_connection_find_session_by_id(wtf_http3_connection_t *conn, uint64_t session_id);
 
 //! Find stream by ID within session
 //! @param session target session
 //! @param stream_id ID of stream to find
 //! @return stream pointer or NULL if not found
-wtf_stream_t *wtf_session_find_stream_by_id(wtf_session_t *session, uint64_t stream_id);
+WTF_API wtf_stream_t *wtf_session_find_stream_by_id(wtf_session_t *session, uint64_t stream_id);
 
 // #endregion
 
@@ -537,28 +555,28 @@ wtf_stream_t *wtf_session_find_stream_by_id(wtf_session_t *session, uint64_t str
 //! Get error string for result code
 //! @param result error code to convert
 //! @return human-readable error description
-const char *wtf_result_to_string(wtf_result_t result);
+WTF_API const char *wtf_result_to_string(wtf_result_t result);
 
 //! Convert WebTransport error to string
 //! @param error_code WebTransport error code
 //! @return human-readable error description
-const char *wtf_webtransport_error_to_string(uint32_t error_code);
+WTF_API const char *wtf_webtransport_error_to_string(uint32_t error_code);
 
 //! Get detailed error information
 //! @param error_code error code to analyze
 //! @param details pointer to error details structure to fill
 //! @return WTF_SUCCESS on success, error code on failure
-wtf_result_t wtf_get_error_details(uint32_t error_code, wtf_error_details_t *details);
+WTF_API wtf_result_t wtf_get_error_details(uint32_t error_code, wtf_error_details_t *details);
 
 //! Check if error code is valid application error
 //! @param error_code error code to validate
 //! @return true if error code is in valid application range
-bool wtf_is_valid_application_error(uint32_t error_code);
+WTF_API bool wtf_is_valid_application_error(uint32_t error_code);
 
 //! Convert HTTP/3 error to string
 //! @param http3_error HTTP/3 error code
 //! @return human-readable error description
-const char *wtf_http3_error_to_string(uint64_t http3_error);
+WTF_API const char *wtf_http3_error_to_string(uint64_t http3_error);
 
 // #endregion
 

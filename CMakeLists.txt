@@ -76,13 +76,14 @@ else()
             add_link_options(-Wl,-no_compact_unwind)
         endif()
     else()
-        add_compile_options(-O2 -DNDEBUG )
+        add_compile_options(-O2 -DNDEBUG)
         add_link_options(-flto)
         if(CMAKE_C_COMPILER_ID STREQUAL "GNU")
             add_compile_options(-fuse-linker-plugin -ffat-lto-objects)
             add_link_options(-fuse-linker-plugin)
         endif()
     endif()
+    
 endif()
 
 
@@ -177,9 +178,12 @@ set_target_properties(wtf PROPERTIES
     SOVERSION ${PROJECT_VERSION_MAJOR}
 )
 
+if(NOT WIN32)
+    target_compile_options(wtf PRIVATE -fvisibility=hidden)
+endif()
+
 if(WIN32)
     set_target_properties(wtf PROPERTIES
-        WINDOWS_EXPORT_ALL_SYMBOLS ON
         ARCHIVE_OUTPUT_NAME wtf
         RUNTIME_OUTPUT_NAME wtf
     )
@@ -216,6 +220,8 @@ target_link_libraries(wtf
 if(WTF_ENABLE_LOGGING)
     target_compile_definitions(wtf PRIVATE WTF_ENABLE_LOGGING=1)
 endif()
+
+target_compile_definitions(wtf PRIVATE WTF_EXPORTS)
 
 add_library(WebTransport::wtf ALIAS wtf)
 
@@ -269,6 +275,8 @@ else()
 message(STATUS "  MsQuic Logging:    OFF")
 endif()
 if(WIN32)
-message(STATUS "  Windows DLL Export: ON")
+message(STATUS "  Symbol Export:     AUTO (Windows DLL)")
+else()
+message(STATUS "  Symbol Export:     CONTROLLED (visibility)")
 endif()
 message(STATUS "")

@@ -381,10 +381,10 @@ static bool wtf_send_connect_response(wtf_http3_stream *stream,
                                       uint16_t status_code);
 
 
-QUIC_STREAM_CALLBACK wtf_stream_callback;
-QUIC_STREAM_CALLBACK wtf_upgraded_stream_callback;
-QUIC_CONNECTION_CALLBACK wtf_connection_callback;
-QUIC_LISTENER_CALLBACK wtf_listener_callback;
+static QUIC_STREAM_CALLBACK wtf_stream_callback;
+static QUIC_STREAM_CALLBACK wtf_upgraded_stream_callback;
+static QUIC_CONNECTION_CALLBACK wtf_connection_callback;
+static QUIC_LISTENER_CALLBACK wtf_listener_callback;
 
 static bool wtf_qpack_initialize_encoder(wtf_connection *conn);
 static void wtf_qpack_send_encoder_data(wtf_connection *conn);
