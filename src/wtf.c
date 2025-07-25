@@ -380,14 +380,11 @@ static wtf_result_t wtf_parse_connect_headers(wtf_http3_stream *stream,
 static bool wtf_send_connect_response(wtf_http3_stream *stream,
                                       uint16_t status_code);
 
-static QUIC_STATUS QUIC_API wtf_stream_callback(HQUIC Stream, void *Context,
-                                                QUIC_STREAM_EVENT *Event);
-static QUIC_STATUS QUIC_API wtf_upgraded_stream_callback(
-    HQUIC Stream, void *Context, QUIC_STREAM_EVENT *Event);
-static QUIC_STATUS QUIC_API wtf_connection_callback(
-    HQUIC Connection, void *Context, QUIC_CONNECTION_EVENT *Event);
-static QUIC_STATUS QUIC_API wtf_listener_callback(HQUIC Listener, void *Context,
-                                                  QUIC_LISTENER_EVENT *Event);
+
+QUIC_STREAM_CALLBACK wtf_stream_callback;
+QUIC_STREAM_CALLBACK wtf_upgraded_stream_callback;
+QUIC_CONNECTION_CALLBACK wtf_connection_callback;
+QUIC_LISTENER_CALLBACK wtf_listener_callback;
 
 static bool wtf_qpack_initialize_encoder(wtf_connection *conn);
 static void wtf_qpack_send_encoder_data(wtf_connection *conn);
@@ -412,7 +409,7 @@ static wtf_result_t wtf_stream_send_internal(wtf_stream *stream,
 static bool wtf_stream_process_received_data(wtf_stream *stream,
                                              const uint8_t *data, size_t length,
                                              bool fin);
-static void wtf_stream_handle_reset(wtf_stream *stream, uint32_t error_code);
+static void wtf_stream_handle_reset(wtf_stream *stream, QUIC_UINT62 error_code);
 static uint32_t wtf_map_webtransport_error_to_h3(uint32_t wt_error);
 static uint32_t wtf_map_h3_error_to_webtransport(uint64_t h3_error);
 
@@ -449,8 +446,8 @@ static wtf_session *wtf_connection_find_session(wtf_connection *conn,
 
 static void wtf_settings_init(wtf_settings *settings);
 static bool wtf_write_settings_frame(wtf_connection *conn, uint8_t *buffer,
-                                     uint32_t buffer_size,
-                                     uint32_t *frame_length);
+                                     size_t buffer_size,
+                                     size_t *frame_length);
 static bool wtf_parse_settings_frame(wtf_connection *conn, const uint8_t *data,
                                      size_t data_len);
 static bool wtf_send_settings_on_control_stream(wtf_connection *conn);
@@ -551,6 +548,14 @@ static void wtf_log_internal(wtf_context *ctx, wtf_log_level_t level,
 #endif
 
 static wtf_result_t wtf_quic_status_to_result(QUIC_STATUS status) {
+  if (status == QUIC_STATUS_CONNECTION_REFUSED ||
+      status == QUIC_STATUS_ABORTED) {
+    return WTF_ERROR_CONNECTION_ABORTED;
+  }
+  if (status == QUIC_STATUS_TLS_ERROR) {
+    return WTF_ERROR_TLS_HANDSHAKE_FAILED;
+  }
+  
   switch (status) {
   case QUIC_STATUS_SUCCESS:
     return WTF_SUCCESS;
@@ -558,14 +563,10 @@ static wtf_result_t wtf_quic_status_to_result(QUIC_STATUS status) {
     return WTF_ERROR_INVALID_PARAMETER;
   case QUIC_STATUS_OUT_OF_MEMORY:
     return WTF_ERROR_OUT_OF_MEMORY;
-  case QUIC_STATUS_CONNECTION_REFUSED:
   case QUIC_STATUS_CONNECTION_TIMEOUT:
-  case QUIC_STATUS_ABORTED:
     return WTF_ERROR_CONNECTION_ABORTED;
   case QUIC_STATUS_PROTOCOL_ERROR:
     return WTF_ERROR_PROTOCOL_VIOLATION;
-  case QUIC_STATUS_TLS_ERROR:
-    return WTF_ERROR_TLS_HANDSHAKE_FAILED;
   default:
     return WTF_ERROR_INTERNAL;
   }
@@ -596,6 +597,62 @@ static uint32_t wtf_map_h3_error_to_webtransport(uint64_t h3_error) {
   uint64_t shifted = h3_error - WTF_WEBTRANSPORT_APPLICATION_ERROR_BASE;
   return (uint32_t)(shifted - (shifted / 0x1f));
 }
+
+static char *wtf_strdup(const char *s) {
+  if (s == NULL) {
+    #ifdef EINVAL
+      errno = EINVAL;
+    #endif
+    return NULL;
+  }
+  
+  #if defined(_POSIX_C_SOURCE) && _POSIX_C_SOURCE >= 200809L
+    return strdup(s);
+  #elif defined(_WIN32)
+    return _strdup(s);
+  #endif
+  
+  size_t siz = strlen(s) + 1;
+  char *y = malloc(siz);
+  if (y != NULL) {
+    memcpy(y, s, siz);
+  } else {
+    #ifdef ENOMEM
+      errno = ENOMEM;
+    #endif
+  }
+  return y;
+}
+
+static char *wtf_strndup(const char *s, size_t n) {
+  if (s == NULL) {
+    #ifdef EINVAL
+      errno = EINVAL;
+    #endif
+    return NULL;
+  }
+  
+  #if defined(_POSIX_C_SOURCE) && _POSIX_C_SOURCE >= 200809L
+    return strndup(s, n);
+  #endif
+  
+  size_t len = 0;
+  while (len < n && s[len] != '\0') {
+    len++;
+  }
+  
+  char *y = malloc(len + 1);
+  if (y != NULL) {
+    memcpy(y, s, len);
+    y[len] = '\0';
+  } else {
+    #ifdef ENOMEM
+      errno = ENOMEM;
+    #endif
+  }
+  return y;
+}
+
 
 static wtf_datagram *wtf_datagram_create(const uint8_t *data, size_t length,
                                          uint64_t session_id,
@@ -934,23 +991,23 @@ static int wtf_header_process_header(void *context,
     if (name_len == 7 && strncmp(name, ":method", 7) == 0) {
       if (request->method)
         free(request->method);
-      request->method = strndup(value, value_len);
+      request->method = wtf_strndup(value, value_len);
     } else if (name_len == 7 && strncmp(name, ":scheme", 7) == 0) {
       if (request->scheme)
         free(request->scheme);
-      request->scheme = strndup(value, value_len);
+      request->scheme = wtf_strndup(value, value_len);
     } else if (name_len == 10 && strncmp(name, ":authority", 10) == 0) {
       if (request->authority)
         free(request->authority);
-      request->authority = strndup(value, value_len);
+      request->authority = wtf_strndup(value, value_len);
     } else if (name_len == 5 && strncmp(name, ":path", 5) == 0) {
       if (request->path)
         free(request->path);
-      request->path = strndup(value, value_len);
+      request->path = wtf_strndup(value, value_len);
     } else if (name_len == 9 && strncmp(name, ":protocol", 9) == 0) {
       if (request->protocol)
         free(request->protocol);
-      request->protocol = strndup(value, value_len);
+      request->protocol = wtf_strndup(value, value_len);
     } else {
       if (ctx->connection && ctx->connection->server &&
           ctx->connection->server->context) {
@@ -964,7 +1021,7 @@ static int wtf_header_process_header(void *context,
     if (name_len == 6 && strncmp(name, "origin", 6) == 0) {
       if (request->origin)
         free(request->origin);
-      request->origin = strndup(value, value_len);
+      request->origin = wtf_strndup(value, value_len);
     } else {
       if (ctx->connection && ctx->connection->server &&
           ctx->connection->server->context) {
@@ -1011,12 +1068,12 @@ static void wtf_settings_init(wtf_settings *settings) {
 }
 
 static bool wtf_write_settings_frame(wtf_connection *conn, uint8_t *buffer,
-                                     uint32_t buffer_size,
-                                     uint32_t *frame_length) {
+                                     size_t buffer_size,
+                                     size_t *frame_length) {
   if (!conn || !buffer || !frame_length)
     return false;
 
-  uint32_t offset = 0;
+  size_t offset = 0;
   size_t bytes_written;
 
   if (!wtf_varint_encode(WTF_FRAME_SETTINGS, buffer + offset,
@@ -1025,7 +1082,7 @@ static bool wtf_write_settings_frame(wtf_connection *conn, uint8_t *buffer,
   }
   offset += bytes_written;
 
-  uint32_t settings_size = 0;
+  size_t settings_size = 0;
   settings_size +=
       wtf_varint_size(WTF_SETTING_QPACK_MAX_TABLE_CAPACITY) +
       wtf_varint_size(conn->local_settings.qpack_max_table_capacity);
@@ -1087,7 +1144,7 @@ static bool wtf_send_settings_on_control_stream(wtf_connection *conn) {
     return false;
   }
 
-  uint32_t buffer_size = 512;
+  size_t buffer_size = 512;
 
   void *send_buffer_raw = malloc(sizeof(QUIC_BUFFER) + buffer_size);
   if (!send_buffer_raw) {
@@ -1098,7 +1155,7 @@ static bool wtf_send_settings_on_control_stream(wtf_connection *conn) {
 
   QUIC_BUFFER *send_buffer = (QUIC_BUFFER *)send_buffer_raw;
   uint8_t *data = (uint8_t *)send_buffer_raw + sizeof(QUIC_BUFFER);
-  uint32_t settings_length;
+  size_t settings_length;
 
   if (!wtf_write_settings_frame(conn, data, buffer_size, &settings_length)) {
     WTF_LOG_ERROR(conn->server->context, "settings",
@@ -1107,8 +1164,9 @@ static bool wtf_send_settings_on_control_stream(wtf_connection *conn) {
     return false;
   }
 
+
   send_buffer->Buffer = data;
-  send_buffer->Length = settings_length;
+  send_buffer->Length = (uint32_t) settings_length;
 
   QUIC_STATUS status = conn->server->context->quic_api->StreamSend(
       conn->control_stream->quic_stream, send_buffer, 1, QUIC_SEND_FLAG_NONE,
@@ -1616,7 +1674,7 @@ static bool wtf_stream_process_received_data(wtf_stream *stream,
   return true;
 }
 
-static void wtf_stream_handle_reset(wtf_stream *stream, uint32_t error_code) {
+static void wtf_stream_handle_reset(wtf_stream *stream, QUIC_UINT62 error_code) {
   if (!stream)
     return;
 
@@ -1950,7 +2008,7 @@ static bool wtf_session_process_capsule(wtf_session *session,
       if (reason_len > 1024) {
         reason_len = 1024;
       }
-      reason = strndup((const char *)(capsule->data + 4), reason_len);
+      reason = wtf_strndup((const char *)(capsule->data + 4), reason_len);
     }
 
     WTF_LOG_INFO(session->connection->server->context, "session",
@@ -2349,7 +2407,7 @@ static bool wtf_send_connect_response(wtf_http3_stream *stream,
   QUIC_BUFFER *send_buffer = (QUIC_BUFFER *)response_buffer_raw;
   uint8_t *response_data = (uint8_t *)response_buffer_raw + sizeof(QUIC_BUFFER);
 
-  uint32_t offset = 0;
+  size_t offset = 0;
   size_t bytes_written;
 
   if (!wtf_varint_encode(WTF_FRAME_HEADERS, response_data + offset,
@@ -2375,7 +2433,7 @@ static bool wtf_send_connect_response(wtf_http3_stream *stream,
     status_header.name_offset = 0;
     status_header.name_len = 7;
     status_header.val_offset = 7;
-    status_header.val_len = strlen(status_value);
+    status_header.val_len = (lsxpack_strlen_t) strlen(status_value);
 
     memcpy(status_header.buf, ":status", 7);
     memcpy(status_header.buf + 7, status_value, status_header.val_len);
@@ -2393,7 +2451,7 @@ static bool wtf_send_connect_response(wtf_http3_stream *stream,
                              (enum lsqpack_enc_flags)0) == LQES_OK) {
 
         enum lsqpack_enc_header_flags hflags;
-        int pref_sz = lsqpack_enc_end_header(&conn->qpack.encoder, status_data,
+        size_t pref_sz = lsqpack_enc_end_header(&conn->qpack.encoder, status_data,
                                              prefix_len, &hflags);
         if (pref_sz >= 0) {
           status_len = (uint32_t)(pref_sz + header_len);
@@ -2434,7 +2492,7 @@ static bool wtf_send_connect_response(wtf_http3_stream *stream,
   offset += status_len;
 
   send_buffer->Buffer = response_data;
-  send_buffer->Length = offset;
+  send_buffer->Length = (uint32_t)offset;
 
   QUIC_STATUS quic_status = conn->server->context->quic_api->StreamSend(
       stream->quic_stream, send_buffer, 1, QUIC_SEND_FLAG_NONE,
@@ -3321,7 +3379,7 @@ static QUIC_STATUS QUIC_API wtf_upgraded_stream_callback(
     mtx_unlock(&wt_stream->session->streams_mutex);
 
     uint8_t header[32];
-    uint32_t header_offset = 0;
+    size_t header_offset = 0;
     size_t bytes_written;
 
     if (wt_stream->type == WTF_STREAM_UNIDIRECTIONAL) {
@@ -3370,7 +3428,7 @@ static QUIC_STATUS QUIC_API wtf_upgraded_stream_callback(
 
         memcpy(data, header, header_offset);
         send_buffer->Buffer = data;
-        send_buffer->Length = header_offset;
+        send_buffer->Length = (uint32_t)header_offset;
 
         QUIC_STATUS status = conn->server->context->quic_api->StreamSend(
             Stream, send_buffer, 1, QUIC_SEND_FLAG_NONE, send_buffer_raw);
@@ -3475,7 +3533,7 @@ static QUIC_STATUS QUIC_API wtf_upgraded_stream_callback(
   }
 
   case QUIC_STREAM_EVENT_PEER_SEND_ABORTED: {
-    uint32_t error_code = Event->PEER_SEND_ABORTED.ErrorCode;
+    QUIC_UINT62 error_code = Event->PEER_SEND_ABORTED.ErrorCode;
     WTF_LOG_DEBUG(conn->server->context, "webtransport",
                   "WebTransport stream peer send aborted on stream %llu: 0x%x",
                   (unsigned long long)wt_stream->stream_id, error_code);
@@ -3579,7 +3637,7 @@ static QUIC_STATUS QUIC_API wtf_stream_callback(HQUIC Stream, void *Context,
 
       QUIC_BUFFER *send_buffer = (QUIC_BUFFER *)send_buffer_raw;
       uint8_t *data = (uint8_t *)send_buffer_raw + sizeof(QUIC_BUFFER);
-      uint32_t offset = 0;
+      size_t offset = 0;
       size_t bytes_written;
 
       if (!wtf_varint_encode(stream->type, data + offset, total_size - offset,
@@ -3603,7 +3661,7 @@ static QUIC_STATUS QUIC_API wtf_stream_callback(HQUIC Stream, void *Context,
       }
 
       send_buffer->Buffer = data;
-      send_buffer->Length = offset;
+      send_buffer->Length = (uint32_t)offset;
 
       QUIC_STATUS status = conn->server->context->quic_api->StreamSend(
           Stream, send_buffer, 1, QUIC_SEND_FLAG_NONE, send_buffer_raw);
@@ -4226,8 +4284,8 @@ wtf_result_t wtf_server_create(wtf_context_t *context,
       result = WTF_ERROR_OUT_OF_MEMORY;
       goto cleanup_connections_mutex;
     }
-    srv->cert_file->CertificateFile = strdup(config->cert_file);
-    srv->cert_file->PrivateKeyFile = strdup(config->key_file);
+    srv->cert_file->CertificateFile = wtf_strdup(config->cert_file);
+    srv->cert_file->PrivateKeyFile = wtf_strdup(config->key_file);
     if (!srv->cert_file->CertificateFile || !srv->cert_file->PrivateKeyFile) {
       result = WTF_ERROR_OUT_OF_MEMORY;
       goto cleanup_cert_file;
@@ -4519,7 +4577,7 @@ wtf_result_t wtf_session_close(wtf_session_t *session, uint32_t error_code,
   if (sess->close_reason) {
     free(sess->close_reason);
   }
-  sess->close_reason = reason ? strndup(reason, 1024) : NULL;
+  sess->close_reason = reason ? wtf_strndup(reason, 1024) : NULL;
 
   uint8_t close_data[1028];
   uint32_t close_len = 4;
@@ -4813,6 +4871,7 @@ wtf_result_t wtf_session_create_stream(wtf_session_t *session,
   }
 
   wtf_connection *conn = sess->connection;
+
 
   uint32_t stream_open_flags = QUIC_STREAM_OPEN_FLAG_NONE;
   if (type == WTF_STREAM_UNIDIRECTIONAL) {

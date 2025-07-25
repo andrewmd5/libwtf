@@ -5,13 +5,19 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+#include <inttypes.h>
 
 #ifdef _WIN32
 #include <windows.h>
 #define sleep_ms(ms) Sleep(ms)
+#define strdup _strdup
+#ifndef _WIN32
+#include <sys/time.h>
+#endif
 #else
 #include <time.h>
 #include <unistd.h>
+#include <sys/time.h>
 #define sleep_ms(ms)                                                           \
   do {                                                                         \
     struct timespec ts = {0};                                                  \
@@ -86,24 +92,50 @@ void signal_handler(int sig) {
   printf("\n[SIGNAL] Shutting down server...\n");
 }
 
-// Utility functions
+// Cross-platform high-resolution timestamp function
 uint64_t get_timestamp_ms() {
+#ifdef _WIN32
+  // Windows: Use QueryPerformanceCounter for high-resolution timing
+  static LARGE_INTEGER frequency = {0};
+  static bool initialized = false;
+  
+  if (!initialized) {
+    QueryPerformanceFrequency(&frequency);
+    initialized = true;
+  }
+  
+  LARGE_INTEGER counter;
+  QueryPerformanceCounter(&counter);
+  
+  // Convert to milliseconds
+  return (uint64_t)((counter.QuadPart * 1000) / frequency.QuadPart);
+#else
+  // Unix/Linux: Use clock_gettime with CLOCK_MONOTONIC
   struct timespec ts;
-  clock_gettime(CLOCK_MONOTONIC, &ts);
-  return (uint64_t)(ts.tv_sec * 1000 + ts.tv_nsec / 1000000);
+  if (clock_gettime(CLOCK_MONOTONIC, &ts) == 0) {
+    return (uint64_t)(ts.tv_sec * 1000 + ts.tv_nsec / 1000000);
+  } else {
+    // Fallback to standard time if clock_gettime fails
+    struct timeval tv;
+    gettimeofday(&tv, NULL);
+    return (uint64_t)(tv.tv_sec * 1000 + tv.tv_usec / 1000);
+  }
+#endif
 }
 
 void print_stats() {
   printf("\n[STATS] Server Statistics:\n");
-  printf("  Sessions: %lu created, %lu active\n", g_stats.sessions_created,
+  printf("  Sessions: %" PRIu64 " created, %" PRIu64 " active\n", 
+         g_stats.sessions_created,
          g_stats.sessions_created - g_stats.sessions_destroyed);
-  printf("  Streams: %lu created, %lu active\n", g_stats.streams_created,
+  printf("  Streams: %" PRIu64 " created, %" PRIu64 " active\n", 
+         g_stats.streams_created,
          g_stats.streams_created - g_stats.streams_destroyed);
-  printf("  Server Streams: %lu created\n", g_stats.server_streams_created);
-  printf("  Datagrams: %lu received, %lu sent\n", g_stats.datagrams_received,
-         g_stats.datagrams_sent);
-  printf("  Bytes: %lu received, %lu sent\n", g_stats.bytes_received,
-         g_stats.bytes_sent);
+  printf("  Server Streams: %" PRIu64 " created\n", g_stats.server_streams_created);
+  printf("  Datagrams: %" PRIu64 " received, %" PRIu64 " sent\n", 
+         g_stats.datagrams_received, g_stats.datagrams_sent);
+  printf("  Bytes: %" PRIu64 " received, %" PRIu64 " sent\n", 
+         g_stats.bytes_received, g_stats.bytes_sent);
   printf("\n");
 }
 
@@ -180,17 +212,19 @@ wtf_result_t handle_request_stream(wtf_session_t *session,
 
     // Send initial message on the stream
     char welcome_msg[256];
-    snprintf(welcome_msg, sizeof(welcome_msg),
-             "SERVER_STREAM_CREATED:type=%s,timestamp=%lu", stream_type,
+    int msg_len = snprintf(welcome_msg, sizeof(welcome_msg),
+             "SERVER_STREAM_CREATED:type=%s,timestamp=%" PRIu64, stream_type,
              get_timestamp_ms());
 
-    wtf_buffer_t buffer = {.data = (uint8_t *)welcome_msg,
-                           .length = strlen(welcome_msg)};
+    if (msg_len > 0 && msg_len < (int)sizeof(welcome_msg)) {
+      wtf_buffer_t buffer = {.data = (uint8_t *)welcome_msg,
+                             .length = (size_t)msg_len};
 
-    wtf_stream_send(stream, &buffer, 1, false);
-    g_stats.bytes_sent += buffer.length;
+      wtf_stream_send(stream, &buffer, 1, false);
+      g_stats.bytes_sent += buffer.length;
 
-    printf("[CMD] Server stream created and welcome message sent\n");
+      printf("[CMD] Server stream created and welcome message sent\n");
+    }
   } else {
     printf("[CMD] Failed to create server stream: %s\n",
            wtf_result_to_string(result));
@@ -203,27 +237,30 @@ wtf_result_t handle_ping(wtf_session_t *session, const char *ping_data) {
   char pong_response[512];
   uint64_t timestamp = get_timestamp_ms();
 
-  snprintf(pong_response, sizeof(pong_response), "PONG_%s_server_time=%lu",
-           ping_data, timestamp);
+  int msg_len = snprintf(pong_response, sizeof(pong_response), 
+                        "PONG_%s_server_time=%" PRIu64, ping_data, timestamp);
 
-  wtf_buffer_t buffer = {.data = (uint8_t *)pong_response,
-                         .length = strlen(pong_response)};
+  if (msg_len > 0 && msg_len < (int)sizeof(pong_response)) {
+    wtf_buffer_t buffer = {.data = (uint8_t *)pong_response,
+                           .length = (size_t)msg_len};
 
-  wtf_result_t result = wtf_session_send_datagram(session, &buffer);
-  if (result == WTF_SUCCESS) {
-    g_stats.datagrams_sent++;
-    g_stats.bytes_sent += buffer.length;
-    printf("[CMD] PONG sent in response to PING_%s\n", ping_data);
+    wtf_result_t result = wtf_session_send_datagram(session, &buffer);
+    if (result == WTF_SUCCESS) {
+      g_stats.datagrams_sent++;
+      g_stats.bytes_sent += buffer.length;
+      printf("[CMD] PONG sent in response to PING_%s\n", ping_data);
+    }
+    return result;
   }
-
-  return result;
+  
+  return WTF_ERROR_INVALID_PARAMETER;
 }
 
 wtf_result_t handle_stats_request(wtf_session_t *session) {
   char stats_response[1024];
-  snprintf(stats_response, sizeof(stats_response),
-           "STATS:sessions=%lu/%lu,streams=%lu/%lu,server_streams=%lu,"
-           "datagrams_rx=%lu,datagrams_tx=%lu,bytes_rx=%lu,bytes_tx=%lu",
+  int msg_len = snprintf(stats_response, sizeof(stats_response),
+           "STATS:sessions=%" PRIu64 "/%" PRIu64 ",streams=%" PRIu64 "/%" PRIu64 ",server_streams=%" PRIu64 ","
+           "datagrams_rx=%" PRIu64 ",datagrams_tx=%" PRIu64 ",bytes_rx=%" PRIu64 ",bytes_tx=%" PRIu64,
            g_stats.sessions_created - g_stats.sessions_destroyed,
            g_stats.sessions_created,
            g_stats.streams_created - g_stats.streams_destroyed,
@@ -231,37 +268,43 @@ wtf_result_t handle_stats_request(wtf_session_t *session) {
            g_stats.datagrams_received, g_stats.datagrams_sent,
            g_stats.bytes_received, g_stats.bytes_sent);
 
-  wtf_buffer_t buffer = {.data = (uint8_t *)stats_response,
-                         .length = strlen(stats_response)};
+  if (msg_len > 0 && msg_len < (int)sizeof(stats_response)) {
+    wtf_buffer_t buffer = {.data = (uint8_t *)stats_response,
+                           .length = (size_t)msg_len};
 
-  wtf_result_t result = wtf_session_send_datagram(session, &buffer);
-  if (result == WTF_SUCCESS) {
-    g_stats.datagrams_sent++;
-    g_stats.bytes_sent += buffer.length;
-    printf("[CMD] Stats sent to client\n");
+    wtf_result_t result = wtf_session_send_datagram(session, &buffer);
+    if (result == WTF_SUCCESS) {
+      g_stats.datagrams_sent++;
+      g_stats.bytes_sent += buffer.length;
+      printf("[CMD] Stats sent to client\n");
+    }
+    return result;
   }
-
-  return result;
+  
+  return WTF_ERROR_INVALID_PARAMETER;
 }
 
 wtf_result_t handle_bulk_data(wtf_session_t *session, const char *bulk_info) {
   // For bulk data, we'll create a response indicating we received it
   char bulk_response[256];
-  snprintf(bulk_response, sizeof(bulk_response),
-           "BULK_RECEIVED:info=%s,timestamp=%lu", bulk_info,
+  int msg_len = snprintf(bulk_response, sizeof(bulk_response),
+           "BULK_RECEIVED:info=%s,timestamp=%" PRIu64, bulk_info,
            get_timestamp_ms());
 
-  wtf_buffer_t buffer = {.data = (uint8_t *)bulk_response,
-                         .length = strlen(bulk_response)};
+  if (msg_len > 0 && msg_len < (int)sizeof(bulk_response)) {
+    wtf_buffer_t buffer = {.data = (uint8_t *)bulk_response,
+                           .length = (size_t)msg_len};
 
-  wtf_result_t result = wtf_session_send_datagram(session, &buffer);
-  if (result == WTF_SUCCESS) {
-    g_stats.datagrams_sent++;
-    g_stats.bytes_sent += buffer.length;
-    printf("[CMD] Bulk data acknowledgment sent\n");
+    wtf_result_t result = wtf_session_send_datagram(session, &buffer);
+    if (result == WTF_SUCCESS) {
+      g_stats.datagrams_sent++;
+      g_stats.bytes_sent += buffer.length;
+      printf("[CMD] Bulk data acknowledgment sent\n");
+    }
+    return result;
   }
-
-  return result;
+  
+  return WTF_ERROR_INVALID_PARAMETER;
 }
 
 wtf_result_t handle_close_session(wtf_session_t *session) {
@@ -295,7 +338,7 @@ void stream_callback(const wtf_stream_event_t *event) {
     printf("[STREAM] Data received on stream %u\n",
            stream_ctx ? stream_ctx->stream_id : 0);
 
-    const int buffer_count = event->data_received.buffer_count;
+    const size_t buffer_count = event->data_received.buffer_count;
     const wtf_buffer_t *data = event->data_received.buffers;
 
     // Calculate total length
@@ -602,10 +645,10 @@ int main(int argc, char *argv[]) {
   printf("===============================================\n\n");
 
   // Default settings
-  volatile uint16_t port = 4433;
-  volatile const char *cert_file = "server.crt";
-  volatile const char *key_file = "server.key";
-  volatile bool verbose = false;
+  uint16_t port = 4433;
+  const char *cert_file = "server.crt";
+  const char *key_file = "server.key";
+  bool verbose = false;
 
   // Parse command line arguments
   for (int i = 1; i < argc; i++) {
@@ -639,17 +682,14 @@ int main(int argc, char *argv[]) {
     }
   }
 
-  // Prevent optimization
-  __asm__ __volatile__("" ::: "memory");
-
   // Set up signal handlers
   signal(SIGINT, signal_handler);
   signal(SIGTERM, signal_handler);
 
   printf("[CONFIG] Server Configuration:\n");
-  printf("  Port: %u\n", (uint16_t)port);
-  printf("  Certificate: %s\n", (const char *)cert_file);
-  printf("  Private key: %s\n", (const char *)key_file);
+  printf("  Port: %u\n", port);
+  printf("  Certificate: %s\n", cert_file);
+  printf("  Private key: %s\n", key_file);
   printf("  Verbose logging: %s\n", verbose ? "enabled" : "disabled");
   printf("\n");
 
@@ -669,9 +709,9 @@ int main(int argc, char *argv[]) {
 
   // Create server
   wtf_server_config_t config = {0};
-  config.port = (uint16_t)port;
-  config.cert_file = (const char *)cert_file;
-  config.key_file = (const char *)key_file;
+  config.port = port;
+  config.cert_file = cert_file;
+  config.key_file = key_file;
   config.session_callback = session_callback;
   config.connection_validator = connection_validator;
   config.max_sessions_per_connection = 32;
@@ -699,7 +739,7 @@ int main(int argc, char *argv[]) {
     return 1;
   }
 
-  printf("[SERVER] WebTransport server listening on port %u\n", (uint16_t)port);
+  printf("[SERVER] WebTransport server listening on port %u\n", port);
   printf("[SERVER] Ready to accept connections...\n");
   printf("[SERVER] Press Ctrl+C to stop\n\n");
 

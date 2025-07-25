@@ -11,7 +11,7 @@ project(wtf
     LANGUAGES C CXX)
 
 
-set(CMAKE_C_STANDARD 17)
+set(CMAKE_C_STANDARD 11)
 set(CMAKE_C_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -21,9 +21,17 @@ if(NOT CMAKE_BUILD_TYPE)
     set(CMAKE_BUILD_TYPE Release)
 endif()
 
-# Simple options
-option(WTF_BUILD_SHARED "Build shared library" ON)
-option(WTF_BUILD_STATIC "Build static library" ON)
+set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/output)
+set(CMAKE_LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/output)
+set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/output)
+
+foreach(CONFIG ${CMAKE_CONFIGURATION_TYPES})
+    string(TOUPPER ${CONFIG} CONFIG_UPPER)
+    set(CMAKE_RUNTIME_OUTPUT_DIRECTORY_${CONFIG_UPPER} ${CMAKE_BINARY_DIR}/output/${CONFIG})
+    set(CMAKE_LIBRARY_OUTPUT_DIRECTORY_${CONFIG_UPPER} ${CMAKE_BINARY_DIR}/output/${CONFIG})
+    set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY_${CONFIG_UPPER} ${CMAKE_BINARY_DIR}/output/${CONFIG})
+endforeach()
+
 option(WTF_BUILD_TESTS "Build tests" OFF)
 option(WTF_BUILD_SAMPLES "Build sample applications" OFF)
 option(WTF_ENABLE_LOGGING "Enable logging support" ON)
@@ -32,13 +40,17 @@ option(WTF_ENABLE_LOGGING "Enable logging support" ON)
 include_directories(
     ${CMAKE_CURRENT_SOURCE_DIR}/include
     ${CMAKE_CURRENT_SOURCE_DIR}/src
+    ${CMAKE_CURRENT_SOURCE_DIR}/deps/tinycthreads
+    ${CMAKE_CURRENT_SOURCE_DIR}/deps/ls-qpack
+    ${CMAKE_CURRENT_SOURCE_DIR}/deps/xxhash
+    ${CMAKE_CURRENT_SOURCE_DIR}/deps/verstable
 )
 
 
 set(WTF_VERSION ${GIT_VERSION})
 configure_file(
     ${CMAKE_CURRENT_SOURCE_DIR}/cmake/version.h.in
-    ${CMAKE_CURRENT_SOURCE_DIR}/src/wtf_version.h
+    ${CMAKE_CURRENT_BINARY_DIR}/include/wtf_version.h
     @ONLY
 )
 
@@ -52,7 +64,7 @@ if(MSVC)
         add_compile_options(/Od /Zi /RTC1 /MDd)
         add_link_options(/DEBUG:FULL)
     else()
-        add_compile_options(/O2 /DNDEBUG /GL)
+        add_compile_options(/O2 /DNDEBUG /GL /MD)
         add_link_options(/LTCG)
     endif()
 else()
@@ -112,7 +124,7 @@ FetchContent_Declare(
 
 FetchContent_MakeAvailable(msquic)
 
-# Set MsQuic variables
+
 set(MSQUIC_LIBRARIES msquic)
 set(MSQUIC_INCLUDE_DIRS ${msquic_SOURCE_DIR}/src/inc)
 
@@ -139,103 +151,73 @@ endif()
 
 
 set(WTF_SOURCES
-    src/tinycthread.c
-    src/lsqpack.c
-    src/xxhash.c
+    deps/tinycthreads/tinycthread.c
+    deps/ls-qpack/lsqpack.c
+    deps/xxhash/xxhash.c
     src/wtf.c
 )
 
 set(WTF_HEADERS
-    src/verstable.h
-    src/wtf_version.h
+    deps/verstable/verstable.h
     include/wtf.h
-    src/tinycthread.h
-    src/lsqpack.h
-    src/xxhash.h
-    src/lsxpack_header.h
-    src/huff-tables.h
+    deps/tinycthreads/tinycthread.h
+    deps/ls-qpack/lsqpack.h
+    deps/xxhash/xxhash.h
+    deps/ls-qpack/lsxpack_header.h
+    deps/ls-qpack/huff-tables.h
     ${CMAKE_CURRENT_BINARY_DIR}/include/wtf_version.h
 )
 
 
-if(WTF_BUILD_SHARED)
-    add_library(wtf_shared SHARED ${WTF_SOURCES})
-    
-    set_target_properties(wtf_shared PROPERTIES
-        OUTPUT_NAME wt
-        VERSION ${PROJECT_VERSION}
-        SOVERSION ${PROJECT_VERSION_MAJOR}
-    )
-    
-    target_include_directories(wtf_shared
-        PUBLIC 
-            $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
-            $<BUILD_INTERFACE:${CMAKE_CURRENT_BINARY_DIR}/include>
-            $<INSTALL_INTERFACE:include>
-        PRIVATE
-            ${MSQUIC_INCLUDE_DIRS}
-    )
-    
-    target_link_libraries(wtf_shared
-        PRIVATE
-            ${MSQUIC_LIBRARIES}
-            ${PLATFORM_LIBS}
-    )
-    
-    if(WTF_ENABLE_LOGGING)
-        target_compile_definitions(wtf_shared PRIVATE WTF_ENABLE_LOGGING=1)
-    endif()
-    
 
-    if(CMAKE_BUILD_TYPE STREQUAL "Debug")
-        target_compile_definitions(wtf_shared PRIVATE WTF_DEBUG=1)
-    endif()
-    
+add_library(wtf SHARED ${WTF_SOURCES})
 
-    if(WIN32)
-        target_compile_definitions(wtf_shared PRIVATE WTF_BUILDING_DLL=1)
-    endif()
+set_target_properties(wtf PROPERTIES
+    VERSION ${PROJECT_VERSION}
+    SOVERSION ${PROJECT_VERSION_MAJOR}
+)
+
+if(WIN32)
+    set_target_properties(wtf PROPERTIES
+        WINDOWS_EXPORT_ALL_SYMBOLS ON
+        ARCHIVE_OUTPUT_NAME wtf
+        RUNTIME_OUTPUT_NAME wtf
+    )
 endif()
 
-# Static library
-if(WTF_BUILD_STATIC)
-    add_library(wtf_static STATIC ${WTF_SOURCES})
-    
-    set_target_properties(wtf_static PROPERTIES
-        OUTPUT_NAME wtf_static
-    )
-    
-    target_include_directories(wtf_static
-        PUBLIC 
-            $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
-            $<BUILD_INTERFACE:${CMAKE_CURRENT_BINARY_DIR}/include>
-            $<INSTALL_INTERFACE:include>
-        PRIVATE
-            ${MSQUIC_INCLUDE_DIRS}
-    )
-    
-    target_link_libraries(wtf_static
-        PRIVATE
-            ${MSQUIC_LIBRARIES}
-            ${PLATFORM_LIBS}
-    )
-    
-    if(WTF_ENABLE_LOGGING)
-        target_compile_definitions(wtf_static PRIVATE WTF_ENABLE_LOGGING=1)
-    endif()
+target_include_directories(wtf
+    PUBLIC 
+        $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+        $<BUILD_INTERFACE:${CMAKE_CURRENT_BINARY_DIR}/include>
+        $<INSTALL_INTERFACE:include>
+    PRIVATE
+        ${MSQUIC_INCLUDE_DIRS}
+)
 
-    if(CMAKE_BUILD_TYPE STREQUAL "Debug")
-        target_compile_definitions(wtf_static PRIVATE WTF_DEBUG=1)
-    endif()
+if(WIN32 OR EMSCRIPTEN)
+    target_include_directories(wtf PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/wincompat
+    )
 endif()
 
+target_include_directories(wtf PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/deps/tinycthreads
+    ${CMAKE_CURRENT_SOURCE_DIR}/deps/ls-qpack
+    ${CMAKE_CURRENT_SOURCE_DIR}/deps/xxhash
+    ${CMAKE_CURRENT_SOURCE_DIR}/deps/verstable
+)
 
-if(WTF_BUILD_SHARED)
-    add_library(WebTransport::wt ALIAS wtf_shared)
-elseif(WTF_BUILD_STATIC)
-    add_library(WebTransport::wt ALIAS wtf_static)
+target_link_libraries(wtf
+    PRIVATE
+        ${MSQUIC_LIBRARIES}
+        ${PLATFORM_LIBS}
+)
+
+if(WTF_ENABLE_LOGGING)
+    target_compile_definitions(wtf PRIVATE WTF_ENABLE_LOGGING=1)
 endif()
 
+add_library(WebTransport::wtf ALIAS wtf)
 
 if(WTF_BUILD_SAMPLES AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/samples")
     add_subdirectory(samples)
@@ -249,31 +231,23 @@ endif()
 
 include(GNUInstallDirs)
 
-install(FILES include/wt.h
+install(FILES include/wtf.h
     DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}
 )
 
-if(WTF_BUILD_SHARED)
-    install(TARGETS wtf_shared
-        RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
-        LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
-        ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
-    )
-endif()
-
-if(WTF_BUILD_STATIC)
-    install(TARGETS wtf_static
-        ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
-    )
-endif()
+install(TARGETS wtf
+    RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
+    LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
+    ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
+)
 
 message(STATUS "")
 message(STATUS "WebTransport Library Configuration:")
 message(STATUS "  Git Version:       ${GIT_VERSION}")
 message(STATUS "  Project Version:   ${PROJECT_VERSION}")
 message(STATUS "  Build type:        ${CMAKE_BUILD_TYPE}")
-message(STATUS "  Shared library:    ${WTF_BUILD_SHARED}")
-message(STATUS "  Static library:    ${WTF_BUILD_STATIC}")
+message(STATUS "  Library type:      SHARED")
+message(STATUS "  Output directory:  ${CMAKE_BINARY_DIR}/output")
 message(STATUS "  Tests:             ${WTF_BUILD_TESTS}")
 message(STATUS "  Samples:           ${WTF_BUILD_SAMPLES}")
 message(STATUS "  Logging:           ${WTF_ENABLE_LOGGING}")
@@ -293,5 +267,8 @@ if(WTF_ENABLE_LOGGING OR CMAKE_BUILD_TYPE STREQUAL "Debug")
 message(STATUS "  MsQuic Logging:    ON (stdout)")
 else()
 message(STATUS "  MsQuic Logging:    OFF")
+endif()
+if(WIN32)
+message(STATUS "  Windows DLL Export: ON")
 endif()
 message(STATUS "")

@@ -126,12 +126,10 @@ typedef enum {
 typedef enum { WTF_H3_DATAGRAM_ERROR = 0x33 } wtf_h3_datagram_error_t;
 
 //! WebTransport specific error codes
-typedef enum {
-    WTF_WEBTRANSPORT_BUFFERED_STREAM_REJECTED = 0x3994bd84,
-    WTF_WEBTRANSPORT_SESSION_GONE = 0x170d7b68,
-    WTF_WEBTRANSPORT_APPLICATION_ERROR_BASE = 0x52e4a40fa8db,
-    WTF_WEBTRANSPORT_APPLICATION_ERROR_MAX = 0x52e5ac983162
-} wtf_webtransport_error_t;
+#define WTF_WEBTRANSPORT_BUFFERED_STREAM_REJECTED 0x3994bd84
+#define WTF_WEBTRANSPORT_SESSION_GONE 0x170d7b68
+#define WTF_WEBTRANSPORT_APPLICATION_ERROR_BASE 0x52e4a40fa8db
+#define WTF_WEBTRANSPORT_APPLICATION_ERROR_MAX 0x52e5ac983162
 
 //! Capsule types for the Capsule Protocol
 typedef enum {
@@ -192,15 +190,9 @@ typedef struct {
     void *user_context;            //! User-provided context data
     union {
         struct {
-            // Session is ready for streams/datagrams
-        } connected;
-        struct {
             uint32_t error_code; //! Error code for disconnection
             const char *reason;  //! Human-readable reason
         } disconnected;
-        struct {
-            // Session is draining
-        } draining;
         struct {
             wtf_stream_t *stream;          //! Newly opened stream
             wtf_stream_type_t stream_type; //! Type of the new stream
@@ -226,12 +218,6 @@ typedef struct {
             void *send_context; //! Context from send operation
             bool cancelled;     //! True if send was cancelled
         } send_complete;
-        struct {
-            // Stream closed gracefully by peer
-        } peer_closed;
-        struct {
-            // Stream fully closed
-        } closed;
         struct {
             uint32_t error_code; //! Error code for abort
         } aborted;

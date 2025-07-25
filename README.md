@@ -161,7 +161,7 @@ Included with libwtf is a complete echo server that demonstrates session managem
 
 ## Build Requirements
 
-- C17 compatible compiler
+- C11 compatible compiler
 - [MsQuic](https://github.com/microsoft/msquic)
 - [OpenSSL](https://github.com/openssl/openssl)
 
