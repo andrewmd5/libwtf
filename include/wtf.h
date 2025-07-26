@@ -12,17 +12,17 @@ extern "C" {
 // #region Export macros
 
 #ifdef _WIN32
-    #ifdef WTF_EXPORTS
-        #define WTF_API __declspec(dllexport)
-    #else
-        #define WTF_API __declspec(dllimport)
-    #endif
+#ifdef WTF_EXPORTS
+#define WTF_API __declspec(dllexport)
 #else
-    #ifdef WTF_EXPORTS
-        #define WTF_API __attribute__((visibility("default")))
-    #else
-        #define WTF_API
-    #endif
+#define WTF_API __declspec(dllimport)
+#endif
+#else
+#ifdef WTF_EXPORTS
+#define WTF_API __attribute__((visibility("default")))
+#else
+#define WTF_API
+#endif
 #endif
 
 // #endregion
@@ -42,10 +42,10 @@ typedef struct wtf_http3_connection wtf_http3_connection_t;
 
 //! Execution profiles for performance optimization
 typedef enum {
-    WTF_EXECUTION_PROFILE_LOW_LATENCY = 0,    //! Optimized for minimal latency
+    WTF_EXECUTION_PROFILE_LOW_LATENCY = 0, //! Optimized for minimal latency
     WTF_EXECUTION_PROFILE_MAX_THROUGHPUT = 1, //! Optimized for maximum data throughput
-    WTF_EXECUTION_PROFILE_REAL_TIME = 2,      //! Real-time processing priority
-    WTF_EXECUTION_PROFILE_SCAVENGER = 3       //! Background processing priority
+    WTF_EXECUTION_PROFILE_REAL_TIME = 2, //! Real-time processing priority
+    WTF_EXECUTION_PROFILE_SCAVENGER = 3 //! Background processing priority
 } wtf_execution_profile_t;
 
 //! Result codes for all WebTransport operations
@@ -68,36 +68,36 @@ typedef enum {
 
 //! Logging levels for debugging and monitoring
 typedef enum {
-    WTF_LOG_TRACE = 0,    //! Most detailed messages, may contain sensitive data
-    WTF_LOG_DEBUG = 1,    //! Interactive investigation during development
-    WTF_LOG_INFO = 2,     //! General application flow information
-    WTF_LOG_WARN = 3,     //! Abnormal or unexpected events
-    WTF_LOG_ERROR = 4,    //! Current flow stopped due to failure
+    WTF_LOG_TRACE = 0, //! Most detailed messages, may contain sensitive data
+    WTF_LOG_DEBUG = 1, //! Interactive investigation during development
+    WTF_LOG_INFO = 2, //! General application flow information
+    WTF_LOG_WARN = 3, //! Abnormal or unexpected events
+    WTF_LOG_ERROR = 4, //! Current flow stopped due to failure
     WTF_LOG_CRITICAL = 5, //! Unrecoverable application or system crash
-    WTF_LOG_NONE = 6      //! Disable all logging
+    WTF_LOG_NONE = 6 //! Disable all logging
 } wtf_log_level_t;
 
 //! Server operational states
 typedef enum {
-    WTF_SERVER_STOPPED,   //! Server is not running
-    WTF_SERVER_STARTING,  //! Server is initializing
+    WTF_SERVER_STOPPED, //! Server is not running
+    WTF_SERVER_STARTING, //! Server is initializing
     WTF_SERVER_LISTENING, //! Server is accepting connections
-    WTF_SERVER_STOPPING   //! Server is shutting down
+    WTF_SERVER_STOPPING //! Server is shutting down
 } wtf_server_state_t;
 
 //! Session lifecycle states
 typedef enum {
     WTF_SESSION_HANDSHAKING, //! Initial connection handshake
-    WTF_SESSION_CONNECTED,   //! Session is active and ready
-    WTF_SESSION_DRAINING,    //! Session is draining before close
-    WTF_SESSION_CLOSED       //! Session has been closed
+    WTF_SESSION_CONNECTED, //! Session is active and ready
+    WTF_SESSION_DRAINING, //! Session is draining before close
+    WTF_SESSION_CLOSED //! Session has been closed
 } wtf_session_state_t;
 
 //! Stream operational states
 typedef enum {
-    WTF_STREAM_OPEN,    //! Stream is active
+    WTF_STREAM_OPEN, //! Stream is active
     WTF_STREAM_CLOSING, //! Stream is closing gracefully
-    WTF_STREAM_CLOSED   //! Stream is fully closed
+    WTF_STREAM_CLOSED //! Stream is fully closed
 } wtf_stream_state_t;
 
 //! Stream direction types
@@ -109,7 +109,7 @@ typedef enum {
 //! Connection validation decisions
 typedef enum {
     WTF_CONNECTION_ACCEPT, //! Accept the incoming connection
-    WTF_CONNECTION_REJECT  //! Reject the incoming connection
+    WTF_CONNECTION_REJECT //! Reject the incoming connection
 } wtf_connection_decision_t;
 
 //! HTTP/3 error codes as defined in RFC 9114
@@ -158,10 +158,10 @@ typedef enum {
 
 //! Session event types for callback notifications
 typedef enum {
-    WTF_SESSION_EVENT_CONNECTED,        //! Session established successfully
-    WTF_SESSION_EVENT_DISCONNECTED,     //! Session has been disconnected
-    WTF_SESSION_EVENT_DRAINING,         //! Session is being drained
-    WTF_SESSION_EVENT_STREAM_OPENED,    //! New stream created on session
+    WTF_SESSION_EVENT_CONNECTED, //! Session established successfully
+    WTF_SESSION_EVENT_DISCONNECTED, //! Session has been disconnected
+    WTF_SESSION_EVENT_DRAINING, //! Session is being drained
+    WTF_SESSION_EVENT_STREAM_OPENED, //! New stream created on session
     WTF_SESSION_EVENT_DATAGRAM_RECEIVED //! Datagram received on session
 } wtf_session_event_type_t;
 
@@ -169,9 +169,9 @@ typedef enum {
 typedef enum {
     WTF_STREAM_EVENT_DATA_RECEIVED, //! Data received on stream
     WTF_STREAM_EVENT_SEND_COMPLETE, //! Send operation completed
-    WTF_STREAM_EVENT_PEER_CLOSED,   //! Peer closed their end of stream
-    WTF_STREAM_EVENT_CLOSED,        //! Stream fully closed
-    WTF_STREAM_EVENT_ABORTED        //! Stream was aborted with error
+    WTF_STREAM_EVENT_PEER_CLOSED, //! Peer closed their end of stream
+    WTF_STREAM_EVENT_CLOSED, //! Stream fully closed
+    WTF_STREAM_EVENT_ABORTED //! Stream was aborted with error
 } wtf_stream_event_type_t;
 
 // #endregion
@@ -180,39 +180,39 @@ typedef enum {
 
 //! Data buffer for network operations
 typedef struct {
-    const uint8_t *data; //! Pointer to buffer data
-    size_t length;       //! Size of data in bytes
+    const uint8_t* data; //! Pointer to buffer data
+    size_t length; //! Size of data in bytes
 } wtf_buffer_t;
 
 //! HTTP header for connection validation
 typedef struct {
-    const char *name;  //! Header name
-    const char *value; //! Header value
+    const char* name; //! Header name
+    const char* value; //! Header value
 } wtf_http_header_t;
 
 //! Connection request information for validation
 typedef struct {
-    const char *origin;               //! Origin of the request
-    const char *path;                 //! Request path
-    const char *authority;            //! Authority header value
-    const wtf_http_header_t *headers; //! Array of HTTP headers
-    size_t header_count;              //! Number of headers
-    void *peer_address;               //! Peer network address
-    size_t address_length;            //! Size of address structure
+    const char* origin; //! Origin of the request
+    const char* path; //! Request path
+    const char* authority; //! Authority header value
+    const wtf_http_header_t* headers; //! Array of HTTP headers
+    size_t header_count; //! Number of headers
+    void* peer_address; //! Peer network address
+    size_t address_length; //! Size of address structure
 } wtf_connection_request_t;
 
 //! Session event data structure
 typedef struct {
     wtf_session_event_type_t type; //! Type of session event
-    wtf_session_t *session;        //! Session that generated the event
-    void *user_context;            //! User-provided context data
+    wtf_session_t* session; //! Session that generated the event
+    void* user_context; //! User-provided context data
     union {
         struct {
             uint32_t error_code; //! Error code for disconnection
-            const char *reason;  //! Human-readable reason
+            const char* reason; //! Human-readable reason
         } disconnected;
         struct {
-            wtf_stream_t *stream;          //! Newly opened stream
+            wtf_stream_t* stream; //! Newly opened stream
             wtf_stream_type_t stream_type; //! Type of the new stream
         } stream_opened;
         struct {
@@ -224,17 +224,17 @@ typedef struct {
 //! Stream event data structure
 typedef struct {
     wtf_stream_event_type_t type; //! Type of stream event
-    wtf_stream_t *stream;         //! Stream that generated the event
-    void *user_context;           //! User-provided context data
+    wtf_stream_t* stream; //! Stream that generated the event
+    void* user_context; //! User-provided context data
     union {
         struct {
-            wtf_buffer_t *buffers; //! Array of received data buffers
-            size_t buffer_count;   //! Number of buffers
-            bool fin;              //! True if this is the final data
+            wtf_buffer_t* buffers; //! Array of received data buffers
+            size_t buffer_count; //! Number of buffers
+            bool fin; //! True if this is the final data
         } data_received;
         struct {
-            void *send_context; //! Context from send operation
-            bool cancelled;     //! True if send was cancelled
+            void* send_context; //! Context from send operation
+            bool cancelled; //! True if send was cancelled
         } send_complete;
         struct {
             uint32_t error_code; //! Error code for abort
@@ -244,11 +244,11 @@ typedef struct {
 
 //! Detailed error information
 typedef struct {
-    uint32_t error_code;       //! Numeric error code
-    const char *description;   //! Human-readable description
+    uint32_t error_code; //! Numeric error code
+    const char* description; //! Human-readable description
     bool is_application_error; //! True if application-level error
-    bool is_transport_error;   //! True if transport-level error
-    bool is_protocol_error;    //! True if protocol violation
+    bool is_transport_error; //! True if transport-level error
+    bool is_protocol_error; //! True if protocol violation
 } wtf_error_details_t;
 
 // #endregion
@@ -259,16 +259,16 @@ typedef struct {
 //! @param request incoming connection request details
 //! @param user_context user-provided context data
 //! @return decision to accept or reject the connection
-typedef wtf_connection_decision_t (*wtf_connection_validator_t)(const wtf_connection_request_t *request,
-                                                                void *user_context);
+typedef wtf_connection_decision_t (*wtf_connection_validator_t)(
+    const wtf_connection_request_t* request, void* user_context);
 
 //! Session event notification callback
 //! @param event session event details
-typedef void (*wtf_session_callback_t)(const wtf_session_event_t *event);
+typedef void (*wtf_session_callback_t)(const wtf_session_event_t* event);
 
 //! Stream event notification callback
 //! @param event stream event details
-typedef void (*wtf_stream_callback_t)(const wtf_stream_event_t *event);
+typedef void (*wtf_stream_callback_t)(const wtf_stream_event_t* event);
 
 //! Logging callback
 //! @param level log message severity level
@@ -276,121 +276,122 @@ typedef void (*wtf_stream_callback_t)(const wtf_stream_event_t *event);
 //! @param file source file name
 //! @param line source file line number
 //! @param message formatted log message
-typedef void (*wtf_log_callback_t)(wtf_log_level_t level, const char *component, const char *file, int line,
-                                   const char *message);
+typedef void (*wtf_log_callback_t)(wtf_log_level_t level, const char* component,
+    const char* file, int line,
+    const char* message);
 
 // #endregion
 
 // #region Configuration Structures
 
 typedef enum {
-  WTF_CERT_TYPE_NONE,                    //! No certificate (client only)
-  WTF_CERT_TYPE_FILE,                    //! Certificate pair loaded from disk (PEM/CER)
-  WTF_CERT_TYPE_FILE_PROTECTED,          //! Protected certificate with password
-  WTF_CERT_TYPE_HASH,                    //! Certificate specified by hash (Windows/Schannel)
-  WTF_CERT_TYPE_HASH_STORE,              //! Certificate from specific store by hash
-  WTF_CERT_TYPE_CONTEXT,                 //! Windows CAPI certificate context
-  WTF_CERT_TYPE_PKCS12,                  //! PKCS#12/PFX certificate with optional password
+    WTF_CERT_TYPE_NONE, //! No certificate (client only)
+    WTF_CERT_TYPE_FILE, //! Certificate pair loaded from disk (PEM/CER)
+    WTF_CERT_TYPE_FILE_PROTECTED, //! Protected certificate with password
+    WTF_CERT_TYPE_HASH, //! Certificate specified by hash (Windows/Schannel)
+    WTF_CERT_TYPE_HASH_STORE, //! Certificate from specific store by hash
+    WTF_CERT_TYPE_CONTEXT, //! Windows CAPI certificate context
+    WTF_CERT_TYPE_PKCS12, //! PKCS#12/PFX certificate with optional password
 } wtf_certificate_type_t;
 
 typedef struct {
-    wtf_certificate_type_t cert_type;      //! Type of certificate configuration
-    
+    wtf_certificate_type_t cert_type; //! Type of certificate configuration
+
     // Union for different certificate data types
     union {
         // File-based certificates
         struct {
-            const char *cert_path;         //! Path to certificate file
-            const char *key_path;          //! Path to private key file
+            const char* cert_path; //! Path to certificate file
+            const char* key_path; //! Path to private key file
         } file;
-        
+
         // Protected file-based certificates
         struct {
-            const char *cert_path;         //! Path to certificate file
-            const char *key_path;          //! Path to private key file
-            const char *password;          //! Password for private key
+            const char* cert_path; //! Path to certificate file
+            const char* key_path; //! Path to private key file
+            const char* password; //! Password for private key
         } protected_file;
-        
+
         // Hash-based certificates (Windows/Schannel)
         struct {
-            const char *thumbprint;        //! Hex string of certificate thumbprint
+            const char* thumbprint; //! Hex string of certificate thumbprint
         } hash;
-        
+
         // Store-based certificates (Windows/Schannel)
         struct {
-            const char *thumbprint;        //! Hex string of certificate thumbprint
-            const char *store_name;        //! Name of certificate store
+            const char* thumbprint; //! Hex string of certificate thumbprint
+            const char* store_name; //! Name of certificate store
         } hash_store;
-        
+
         // PKCS#12/PFX certificates
         struct {
-            const void *data;              //! PKCS#12 binary data
-            size_t data_size;              //! Size of PKCS#12 data
-            const char *password;          //! Optional password for PKCS#12
+            const void* data; //! PKCS#12 binary data
+            size_t data_size; //! Size of PKCS#12 data
+            const char* password; //! Optional password for PKCS#12
         } pkcs12;
-        
-        // Windows certificate context (opaque pointer)
-        void *context;                     //! Platform-specific certificate context
-    } cert_data;
-    
-    const char *principal;                 //! Principal name for certificate selection
-    const char *ca_cert_file;              //! Optional CA certificate file path
-} wtf_certificate_config_t;
 
+        // Windows certificate context (opaque pointer)
+        void* context; //! Platform-specific certificate context
+    } cert_data;
+
+    const char* principal; //! Principal name for certificate selection
+    const char* ca_cert_file; //! Optional CA certificate file path
+} wtf_certificate_config_t;
 
 //! Server configuration parameters
 typedef struct {
-    const char *host;      //! Host address to bind to
-    uint16_t port;         //! Port number to listen on
+    const char* host; //! Host address to bind to
+    uint16_t port; //! Port number to listen on
 
-    wtf_certificate_config_t *cert_config; //! TLS certificate configuration
+    wtf_certificate_config_t* cert_config; //! TLS certificate configuration
 
     // Session limits
     uint32_t max_sessions_per_connection; //! Maximum sessions per connection
-    uint32_t max_streams_per_session;     //! Maximum streams per session
-    uint64_t max_data_per_session;        //! Maximum data per session
+    uint32_t max_streams_per_session; //! Maximum streams per session
+    uint64_t max_data_per_session; //! Maximum data per session
 
     // Timeouts
-    uint32_t idle_timeout_ms;      //! Idle timeout in milliseconds
+    uint32_t idle_timeout_ms; //! Idle timeout in milliseconds
     uint32_t handshake_timeout_ms; //! Handshake timeout in milliseconds
 
     // Features
-    bool enable_0rtt;      //! Enable 0-RTT connections
+    bool enable_0rtt; //! Enable 0-RTT connections
     bool enable_migration; //! Enable connection migration
 
     // Callbacks
-    wtf_connection_validator_t connection_validator; //! Connection validation callback
-    wtf_session_callback_t session_callback;         //! Session event callback
-    void *user_context;                              //! User context for callbacks
+    wtf_connection_validator_t
+        connection_validator; //! Connection validation callback
+    wtf_session_callback_t session_callback; //! Session event callback
+    void* user_context; //! User context for callbacks
 } wtf_server_config_t;
 
 //! Library context configuration
 typedef struct {
-    wtf_log_level_t log_level;                 //! Global logging level
-    wtf_log_callback_t log_callback;           //! Custom logging callback
-    void *log_user_context;                    //! Context for log callback
-    uint32_t worker_thread_count;              //! Number of worker threads
-    bool enable_load_balancing;                //! Enable load balancing
-    bool disable_encryption;                   //! Disable encryption for testing
+    wtf_log_level_t log_level; //! Global logging level
+    wtf_log_callback_t log_callback; //! Custom logging callback
+    void* log_user_context; //! Context for log callback
+    uint32_t worker_thread_count; //! Number of worker threads
+    bool enable_load_balancing; //! Enable load balancing
+    bool disable_encryption; //! Disable encryption for testing
     wtf_execution_profile_t execution_profile; //! Performance profile
 } wtf_context_config_t;
 
 //! Server performance statistics
 typedef struct {
-    uint32_t active_sessions;             //! Currently active sessions
-    uint64_t total_sessions_accepted;     //! Total sessions accepted
-    uint64_t total_sessions_rejected;     //! Total sessions rejected
+    uint32_t active_sessions; //! Currently active sessions
+    uint64_t total_sessions_accepted; //! Total sessions accepted
+    uint64_t total_sessions_rejected; //! Total sessions rejected
     uint64_t total_connections_attempted; //! Total connection attempts
-    uint64_t total_bytes_sent;            //! Total bytes transmitted
-    uint64_t total_bytes_received;        //! Total bytes received
+    uint64_t total_bytes_sent; //! Total bytes transmitted
+    uint64_t total_bytes_received; //! Total bytes received
 } wtf_server_statistics_t;
 
 //! Library version information
 typedef struct {
-    uint32_t major;             //! Major version number
-    uint32_t minor;             //! Minor version number
-    uint32_t patch;             //! Patch version number
-    const char *version;     //! Build information string
+    uint32_t major; //! Major version number
+    uint32_t minor; //! Minor version number
+    uint32_t patch; //! Patch version number
+    const char* version; //! Build information string
 } wtf_version_info_t;
 
 // #endregion
@@ -399,55 +400,60 @@ typedef struct {
 
 //! Get library version information
 //! @return pointer to version structure
-WTF_API wtf_version_info_t *wtf_get_version();
+WTF_API wtf_version_info_t* wtf_get_version();
 
 //! Create a new WebTransport context
 //! @param config context configuration parameters
 //! @param context pointer to receive the created context
 //! @return WTF_SUCCESS on success, error code on failure
-WTF_API wtf_result_t wtf_context_create(const wtf_context_config_t *config, wtf_context_t **context);
+WTF_API wtf_result_t wtf_context_create(const wtf_context_config_t* config,
+    wtf_context_t** context);
 
 //! Destroy a WebTransport context and cleanup all resources
 //! @param context context to destroy
-WTF_API void wtf_context_destroy(wtf_context_t *context);
+WTF_API void wtf_context_destroy(wtf_context_t* context);
 
 //! Set global log level for the context
 //! @param context target context
 //! @param level new logging level
 //! @return WTF_SUCCESS on success, error code on failure
-WTF_API wtf_result_t wtf_context_set_log_level(wtf_context_t *context, wtf_log_level_t level);
+WTF_API wtf_result_t wtf_context_set_log_level(wtf_context_t* context,
+    wtf_log_level_t level);
 
 //! Create a new WebTransport server
 //! @param context parent context for the server
 //! @param config server configuration parameters
 //! @param server pointer to receive the created server
 //! @return WTF_SUCCESS on success, error code on failure
-WTF_API wtf_result_t wtf_server_create(wtf_context_t *context, const wtf_server_config_t *config, wtf_server_t **server);
+WTF_API wtf_result_t wtf_server_create(wtf_context_t* context,
+    const wtf_server_config_t* config,
+    wtf_server_t** server);
 
 //! Start the server listening for connections
 //! @param server server instance to start
 //! @return WTF_SUCCESS on success, error code on failure
-WTF_API wtf_result_t wtf_server_start(wtf_server_t *server);
+WTF_API wtf_result_t wtf_server_start(wtf_server_t* server);
 
 //! Stop the server gracefully
 //! @param server server instance to stop
 //! @return WTF_SUCCESS on success, error code on failure
-WTF_API wtf_result_t wtf_server_stop(wtf_server_t *server);
+WTF_API wtf_result_t wtf_server_stop(wtf_server_t* server);
 
 //! Get current server state
 //! @param server target server instance
 //! @return current operational state
-WTF_API wtf_server_state_t wtf_server_get_state(wtf_server_t *server);
+WTF_API wtf_server_state_t wtf_server_get_state(wtf_server_t* server);
 
 //! Get server statistics
 //! @param server target server instance
 //! @param stats pointer to statistics structure to fill
 //! @return WTF_SUCCESS on success, error code on failure
-WTF_API wtf_result_t wtf_server_get_statistics(wtf_server_t *server, wtf_server_statistics_t *stats);
+WTF_API wtf_result_t wtf_server_get_statistics(wtf_server_t* server,
+    wtf_server_statistics_t* stats);
 
 //! Destroy the server and free resources
 //! @param server server instance to destroy
-WTF_API void wtf_server_destroy(wtf_server_t *server);
+WTF_API void wtf_server_destroy(wtf_server_t* server);
 
 // #endregion
 
@@ -458,43 +464,50 @@ WTF_API void wtf_server_destroy(wtf_server_t *server);
 //! @param error_code application error code
 //! @param reason human-readable reason for closure
 //! @return WTF_SUCCESS on success, error code on failure
-WTF_API wtf_result_t wtf_session_close(wtf_session_t *session, uint32_t error_code, const char *reason);
+WTF_API wtf_result_t wtf_session_close(wtf_session_t* session,
+    uint32_t error_code, const char* reason);
 
 //! Drain a session - sends DRAIN_WEBTRANSPORT_SESSION capsule
 //! @param session session to drain
 //! @return WTF_SUCCESS on success, error code on failure
-WTF_API wtf_result_t wtf_session_drain(wtf_session_t *session);
+WTF_API wtf_result_t wtf_session_drain(wtf_session_t* session);
 
 //! Send a datagram on a session
 //! @param session target session
 //! @param data buffer containing datagram data
 //! @return WTF_SUCCESS on success, error code on failure
 //! @note The data buffer must remain valid until send completion
-WTF_API wtf_result_t wtf_session_send_datagram(wtf_session_t *session, const wtf_buffer_t *data);
+WTF_API wtf_result_t wtf_session_send_datagram(wtf_session_t* session,
+    const wtf_buffer_t* data);
 
 //! Open a new stream on a session
 //! @param session parent session for the stream
 //! @param type stream type (bidirectional or unidirectional)
 //! @param stream pointer to receive the created stream
 //! @return WTF_SUCCESS on success, error code on failure
-WTF_API wtf_result_t wtf_session_create_stream(wtf_session_t *session, wtf_stream_type_t type, wtf_stream_t **stream);
+WTF_API wtf_result_t wtf_session_create_stream(wtf_session_t* session,
+    wtf_stream_type_t type,
+    wtf_stream_t** stream);
 
 //! Get session state
 //! @param session target session
 //! @return current session state
-WTF_API wtf_session_state_t wtf_session_get_state(wtf_session_t *session);
+WTF_API wtf_session_state_t wtf_session_get_state(wtf_session_t* session);
 
 //! Get session peer address
 //! @param session target session
 //! @param address_buffer buffer to receive address data
 //! @param buffer_size pointer to buffer size, updated with actual size
 //! @return WTF_SUCCESS on success, error code on failure
-WTF_API wtf_result_t wtf_session_get_peer_address(wtf_session_t *session, void *address_buffer, size_t *buffer_size);
+WTF_API wtf_result_t wtf_session_get_peer_address(wtf_session_t* session,
+    void* address_buffer,
+    size_t* buffer_size);
 
 //! Set session user context
 //! @param session target session
 //! @param user_context user-provided context data
-WTF_API void wtf_session_set_context(wtf_session_t *session, void *user_context);
+WTF_API void wtf_session_set_context(wtf_session_t* session,
+    void* user_context);
 
 // #endregion
 
@@ -506,63 +519,72 @@ WTF_API void wtf_session_set_context(wtf_session_t *session, void *user_context)
 //! @param buffer_count number of buffers in array
 //! @param fin true if this is the final data
 //! @return WTF_SUCCESS on success, error code on failure
-WTF_API wtf_result_t wtf_stream_send(wtf_stream_t *stream, const wtf_buffer_t *buffers, size_t buffer_count, bool fin);
+WTF_API wtf_result_t wtf_stream_send(wtf_stream_t* stream,
+    const wtf_buffer_t* buffers,
+    size_t buffer_count, bool fin);
 
 //! Close a stream gracefully (send FIN)
 //! @param stream stream to close
 //! @return WTF_SUCCESS on success, error code on failure
-WTF_API wtf_result_t wtf_stream_close(wtf_stream_t *stream);
+WTF_API wtf_result_t wtf_stream_close(wtf_stream_t* stream);
 
 //! Abort a stream with error code
 //! @param stream stream to abort
 //! @param error_code application error code
 //! @return WTF_SUCCESS on success, error code on failure
-WTF_API wtf_result_t wtf_stream_abort(wtf_stream_t *stream, uint32_t error_code);
+WTF_API wtf_result_t wtf_stream_abort(wtf_stream_t* stream,
+    uint32_t error_code);
 
 //! Get the stream ID
 //! @param stream target stream
 //! @param stream_id pointer to receive the stream ID
 //! @return WTF_SUCCESS on success, error code on failure
-WTF_API wtf_result_t wtf_stream_get_id(wtf_stream_t *stream, uint64_t *stream_id);
+WTF_API wtf_result_t wtf_stream_get_id(wtf_stream_t* stream,
+    uint64_t* stream_id);
 
 //! Set the stream callback
 //! @param stream target stream
 //! @param callback event callback function
-WTF_API void wtf_stream_set_callback(wtf_stream_t *stream, wtf_stream_callback_t callback);
+WTF_API void wtf_stream_set_callback(wtf_stream_t* stream,
+    wtf_stream_callback_t callback);
 
 //! Set stream user context
 //! @param stream target stream
 //! @param user_context user-provided context data
-WTF_API void wtf_stream_set_context(wtf_stream_t *stream, void *user_context);
+WTF_API void wtf_stream_set_context(wtf_stream_t* stream, void* user_context);
 
 //! Get stream type
 //! @param stream target stream
 //! @return stream type (bidirectional or unidirectional)
-WTF_API wtf_stream_type_t wtf_stream_get_type(wtf_stream_t *stream);
+WTF_API wtf_stream_type_t wtf_stream_get_type(wtf_stream_t* stream);
 
 //! Get stream state
 //! @param stream target stream
 //! @return current stream state
-WTF_API wtf_stream_state_t wtf_stream_get_state(wtf_stream_t *stream);
+WTF_API wtf_stream_state_t wtf_stream_get_state(wtf_stream_t* stream);
 
 //! Set stream priority - higher values indicate higher priority
 //! @param stream target stream
 //! @param priority priority value (higher = more priority)
 //! @return WTF_SUCCESS on success, error code on failure
-WTF_API wtf_result_t wtf_stream_set_priority(wtf_stream_t *stream, uint16_t priority);
+WTF_API wtf_result_t wtf_stream_set_priority(wtf_stream_t* stream,
+    uint16_t priority);
 
 //! Get stream statistics
 //! @param stream target stream
 //! @param bytes_sent pointer to receive bytes sent count
 //! @param bytes_received pointer to receive bytes received count
 //! @return WTF_SUCCESS on success, error code on failure
-WTF_API wtf_result_t wtf_stream_get_statistics(wtf_stream_t *stream, uint64_t *bytes_sent, uint64_t *bytes_received);
+WTF_API wtf_result_t wtf_stream_get_statistics(wtf_stream_t* stream,
+    uint64_t* bytes_sent,
+    uint64_t* bytes_received);
 
 //! Enable or disable stream receive operations
 //! @param stream target stream
 //! @param enabled true to enable, false to disable
 //! @return WTF_SUCCESS on success, error code on failure
-WTF_API wtf_result_t wtf_stream_set_receive_enabled(wtf_stream_t *stream, bool enabled);
+WTF_API wtf_result_t wtf_stream_set_receive_enabled(wtf_stream_t* stream,
+    bool enabled);
 
 // #endregion
 
@@ -573,13 +595,14 @@ WTF_API wtf_result_t wtf_stream_set_receive_enabled(wtf_stream_t *stream, bool e
 //! @param max_sessions pointer to receive maximum sessions limit
 //! @param current_sessions pointer to receive current session count
 //! @return WTF_SUCCESS on success, error code on failure
-WTF_API wtf_result_t wtf_connection_get_session_limit(wtf_http3_connection_t *conn, uint32_t *max_sessions,
-                                              uint32_t *current_sessions);
+WTF_API wtf_result_t wtf_connection_get_session_limit(
+    wtf_http3_connection_t* conn, uint32_t* max_sessions,
+    uint32_t* current_sessions);
 
 //! Check if connection can accept new sessions
 //! @param conn target connection
 //! @return true if connection can accept new sessions
-WTF_API bool wtf_connection_can_accept_session(wtf_http3_connection_t *conn);
+WTF_API bool wtf_connection_can_accept_session(wtf_http3_connection_t* conn);
 
 //! Get all active sessions on a connection
 //! @param conn target connection
@@ -587,20 +610,24 @@ WTF_API bool wtf_connection_can_accept_session(wtf_http3_connection_t *conn);
 //! @param session_count pointer to receive actual session count
 //! @param max_sessions maximum sessions that can fit in array
 //! @return WTF_SUCCESS on success, error code on failure
-WTF_API wtf_result_t wtf_connection_get_sessions(wtf_http3_connection_t *conn, wtf_session_t **sessions, size_t *session_count,
-                                         size_t max_sessions);
+WTF_API wtf_result_t wtf_connection_get_sessions(wtf_http3_connection_t* conn,
+    wtf_session_t** sessions,
+    size_t* session_count,
+    size_t max_sessions);
 
 //! Find session by ID in connection
 //! @param conn target connection
 //! @param session_id ID of session to find
 //! @return session pointer or NULL if not found
-WTF_API wtf_session_t *wtf_connection_find_session_by_id(wtf_http3_connection_t *conn, uint64_t session_id);
+WTF_API wtf_session_t* wtf_connection_find_session_by_id(
+    wtf_http3_connection_t* conn, uint64_t session_id);
 
 //! Find stream by ID within session
 //! @param session target session
 //! @param stream_id ID of stream to find
 //! @return stream pointer or NULL if not found
-WTF_API wtf_stream_t *wtf_session_find_stream_by_id(wtf_session_t *session, uint64_t stream_id);
+WTF_API wtf_stream_t* wtf_session_find_stream_by_id(wtf_session_t* session,
+    uint64_t stream_id);
 
 // #endregion
 
@@ -609,18 +636,19 @@ WTF_API wtf_stream_t *wtf_session_find_stream_by_id(wtf_session_t *session, uint
 //! Get error string for result code
 //! @param result error code to convert
 //! @return human-readable error description
-WTF_API const char *wtf_result_to_string(wtf_result_t result);
+WTF_API const char* wtf_result_to_string(wtf_result_t result);
 
 //! Convert WebTransport error to string
 //! @param error_code WebTransport error code
 //! @return human-readable error description
-WTF_API const char *wtf_webtransport_error_to_string(uint32_t error_code);
+WTF_API const char* wtf_webtransport_error_to_string(uint32_t error_code);
 
 //! Get detailed error information
 //! @param error_code error code to analyze
 //! @param details pointer to error details structure to fill
 //! @return WTF_SUCCESS on success, error code on failure
-WTF_API wtf_result_t wtf_get_error_details(uint32_t error_code, wtf_error_details_t *details);
+WTF_API wtf_result_t wtf_get_error_details(uint32_t error_code,
+    wtf_error_details_t* details);
 
 //! Check if error code is valid application error
 //! @param error_code error code to validate
@@ -630,7 +658,7 @@ WTF_API bool wtf_is_valid_application_error(uint32_t error_code);
 //! Convert HTTP/3 error to string
 //! @param http3_error HTTP/3 error code
 //! @return human-readable error description
-WTF_API const char *wtf_http3_error_to_string(uint64_t http3_error);
+WTF_API const char* wtf_http3_error_to_string(uint64_t http3_error);
 
 // #endregion
 
