@@ -1,32 +1,78 @@
 #!/bin/bash
 set -euo pipefail
 
-# WebTransport ECDSA Certificate Generation Script
-# Generates certificates compliant with WebTransport requirements:
-# - ECDSA with secp256r1 (P-256) curve (RSA forbidden)
-# - X.509v3 certificate
-# - Validity period ≤ 2 weeks
-# - Proper WebTransport extensions
+DEFAULT_HOST="localhost"
+DEFAULT_OUTPUT_DIR="./certs"
+DEFAULT_DAYS=14
+DEFAULT_PFX_PASSWORD=""
 
-echo "🔐 Generating WebTransport-compliant ECDSA certificates..."
+print_header() {
+    echo "=================================================="
+    echo "$1"
+    echo "=================================================="
+}
 
-# Configuration
-HOST="localhost"
-BUILD_DIR="$(pwd)/build"
-CRT="$BUILD_DIR/$HOST.crt"
-KEY="$BUILD_DIR/$HOST.key"
-DAYS=14  # Maximum 2 weeks as per WebTransport spec
-FINGERPRINT_FILE="$BUILD_DIR/fingerprint.hex"
+print_section() {
+    echo ""
+    echo "[$1]"
+    echo "--------------------------------------------------"
+}
 
-# Create build directory
-mkdir -p "$BUILD_DIR"
+print_item() {
+    printf "  %-20s: %s\n" "$1" "$2"
+}
 
-echo "1. Generating ECDSA private key (secp256r1/P-256)..."
-# Use ECDSA with secp256r1 curve as required by WebTransport
-openssl ecparam -genkey -name secp256r1 -noout -out "$KEY"
+print_usage() {
+    cat << EOF
+Usage: $0 [OPTIONS]
 
-echo "2. Creating certificate configuration..."
-cat > "$BUILD_DIR/cert.conf" << EOF
+WebTransport ECDSA Certificate Generator
+
+OPTIONS:
+    -h, --host HOSTNAME     Certificate hostname (default: $DEFAULT_HOST)
+    -o, --output DIR        Output directory (default: $DEFAULT_OUTPUT_DIR)
+    -d, --days DAYS         Validity period in days, max 14 (default: $DEFAULT_DAYS)
+    -p, --pfx-password PWD  Password for PFX file (default: no password)
+    --help                  Show this help message
+
+EXAMPLES:
+    $0                                          
+    $0 -h example.com -o /tmp/certs            
+    $0 --host 192.168.1.100 --days 7          
+    $0 -h localhost -p mypassword              
+
+EOF
+}
+
+validate_days() {
+    local days=$1
+    if [[ ! "$days" =~ ^[0-9]+$ ]] || [ "$days" -lt 1 ] || [ "$days" -gt 14 ]; then
+        echo "Error: Days must be a number between 1 and 14" >&2
+        exit 1
+    fi
+}
+
+generate_certificate() {
+    local host=$1
+    local output_dir=$2
+    local days=$3
+    local pfx_password=$4
+    
+    local crt="$output_dir/$host.crt"
+    local key="$output_dir/$host.key"
+    local pfx="$output_dir/$host.pfx"
+    local fingerprint_hex="$output_dir/fingerprint.hex"
+    local fingerprint_b64="$output_dir/fingerprint.base64"
+    local thumbprint_file="$output_dir/thumbprint.hex"
+    
+    mkdir -p "$output_dir"
+    
+    print_section "Generating ECDSA Private Key"
+    openssl ecparam -genkey -name secp256r1 -noout -out "$key"
+    print_item "Key file" "$key"
+    
+    print_section "Creating Certificate Configuration"
+    cat > "$output_dir/cert.conf" << EOF
 [req]
 distinguished_name = req_distinguished_name
 req_extensions = v3_req
@@ -38,154 +84,380 @@ ST = Test State
 L = Test City
 O = Test Organization
 OU = WebTransport Test
-CN = $HOST
+CN = $host
 
 [v3_req]
-# Critical key usage for WebTransport
 keyUsage = critical, digitalSignature, keyEncipherment
 extendedKeyUsage = critical, serverAuth
 subjectAltName = @alt_names
 
-# WebTransport extension (if supported by OpenSSL version)
-# OID 1.3.6.1.4.1.11129.2.1.24 indicates WebTransport usage
-# Note: Some OpenSSL versions may not support this custom OID
-# 1.3.6.1.4.1.11129.2.1.24 = ASN1:NULL
-
 [alt_names]
-DNS.1 = localhost
+DNS.1 = $host
+EOF
+
+    if [[ "$host" == "localhost" ]]; then
+        cat >> "$output_dir/cert.conf" << EOF
 DNS.2 = *.localhost  
-DNS.3 = 127.0.0.1
 IP.1 = 127.0.0.1
 IP.2 = ::1
 EOF
+    elif [[ "$host" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+        echo "IP.1 = $host" >> "$output_dir/cert.conf"
+    else
+        echo "DNS.2 = *.$host" >> "$output_dir/cert.conf"
+    fi
+    
+    print_section "Generating Certificate"
+    openssl req -new -key "$key" -out "$output_dir/server.csr" -config "$output_dir/cert.conf"
+    
+    openssl x509 -req \
+        -in "$output_dir/server.csr" \
+        -signkey "$key" \
+        -out "$crt" \
+        -days "$days" \
+        -extensions v3_req \
+        -extfile "$output_dir/cert.conf" \
+        -sha256
+    
+    print_item "Certificate" "$crt"
+    
+    print_section "Generating PFX File"
+    if [ -n "$pfx_password" ]; then
+        openssl pkcs12 -export \
+            -out "$pfx" \
+            -inkey "$key" \
+            -in "$crt" \
+            -name "$host" \
+            -password "pass:$pfx_password"
+        print_item "PFX file" "$pfx (password protected)"
+    else
+        openssl pkcs12 -export \
+            -out "$pfx" \
+            -inkey "$key" \
+            -in "$crt" \
+            -name "$host" \
+            -passout pass:
+        print_item "PFX file" "$pfx (no password)"
+    fi
+    
+    print_section "Generating Fingerprints"
+    openssl x509 -in "$crt" -outform der | openssl dgst -sha256 -binary | xxd -p -c 256 > "$fingerprint_hex"
+    openssl x509 -in "$crt" -outform der | openssl dgst -sha256 -binary | base64 > "$fingerprint_b64"
+    openssl x509 -in "$crt" -outform der | openssl dgst -sha1 -binary | xxd -p -c 256 > "$thumbprint_file"
+    
+    print_item "SHA256 (hex)" "$fingerprint_hex"
+    print_item "SHA256 (base64)" "$fingerprint_b64"
+    print_item "SHA1 Thumbprint" "$thumbprint_file"
+    
+    rm "$output_dir/server.csr" "$output_dir/cert.conf"
+    
+    chmod 600 "$key" "$pfx"
+    chmod 644 "$crt"
+}
 
-echo "3. Generating certificate signing request..."
-openssl req -new -key "$KEY" -out "$BUILD_DIR/server.csr" -config "$BUILD_DIR/cert.conf"
+verify_certificate() {
+    local crt=$1
+    local days=$2
+    
+    print_section "Certificate Verification"
+    
+    if [ ! -f "$crt" ]; then
+        echo "Error: Certificate file not found: $crt"
+        return 1
+    fi
+    
+    local cert_text=$(openssl x509 -in "$crt" -noout -text 2>/dev/null)
+    if [ $? -ne 0 ]; then
+        echo "Error: Failed to read certificate for verification"
+        return 1
+    fi
+    
+    local version=$(echo "$cert_text" | grep "Version:" | grep -o "[0-9]" | head -1)
+    if [ "$version" = "3" ]; then
+        print_item "X.509 Version" "v3 (OK)"
+    else
+        print_item "X.509 Version" "v$version (WARNING: Should be v3)"
+    fi
+    
+    local key_alg=$(echo "$cert_text" | grep "Public Key Algorithm")
+    if echo "$key_alg" | grep -q "id-ecPublicKey\|EC"; then
+        print_item "Key Algorithm" "ECDSA (OK)"
+    else
+        print_item "Key Algorithm" "Not ECDSA (ERROR)"
+    fi
+    
+    if echo "$cert_text" | grep -q "prime256v1\|secp256r1"; then
+        print_item "Curve" "secp256r1/P-256 (OK)"
+    else
+        print_item "Curve" "Not secp256r1 (WARNING)"
+    fi
+    
+    local not_before=$(openssl x509 -in "$crt" -noout -startdate 2>/dev/null | cut -d= -f2)
+    local not_after=$(openssl x509 -in "$crt" -noout -enddate 2>/dev/null | cut -d= -f2)
+    
+    if [ -n "$not_before" ] && [ -n "$not_after" ]; then
+        if [[ "$OSTYPE" == "darwin"* ]]; then
+            local not_before_epoch=$(date -j -f "%b %d %H:%M:%S %Y %Z" "$not_before" +%s 2>/dev/null || date -j -f "%b %d %T %Y %Z" "$not_before" +%s 2>/dev/null)
+            local not_after_epoch=$(date -j -f "%b %d %H:%M:%S %Y %Z" "$not_after" +%s 2>/dev/null || date -j -f "%b %d %T %Y %Z" "$not_after" +%s 2>/dev/null)
+        else
+            local not_before_epoch=$(date -d "$not_before" +%s 2>/dev/null)
+            local not_after_epoch=$(date -d "$not_after" +%s 2>/dev/null)
+        fi
+        
+        if [ -n "$not_before_epoch" ] && [ -n "$not_after_epoch" ]; then
+            local validity_seconds=$((not_after_epoch - not_before_epoch))
+            local validity_days=$((validity_seconds / 86400))
+            
+            if [ $validity_days -le 14 ]; then
+                print_item "Validity Period" "$validity_days days (OK)"
+            else
+                print_item "Validity Period" "$validity_days days (ERROR: >14 days)"
+            fi
+        else
+            print_item "Validity Period" "Unable to parse dates"
+        fi
+        
+        print_item "Valid From" "$not_before"
+        print_item "Valid Until" "$not_after"
+    else
+        print_item "Validity Period" "Unable to read validity dates"
+    fi
+}
 
-echo "4. Generating self-signed X.509v3 certificate (valid for $DAYS days)..."
-openssl x509 -req \
-    -in "$BUILD_DIR/server.csr" \
-    -signkey "$KEY" \
-    -out "$CRT" \
-    -days $DAYS \
-    -extensions v3_req \
-    -extfile "$BUILD_DIR/cert.conf" \
-    -sha256
+verify_pfx() {
+    local pfx=$1
+    local pfx_password=$2
+    
+    print_section "PFX File Verification"
+    
+    if [ ! -f "$pfx" ]; then
+        echo "Error: PFX file not found: $pfx"
+        return 1
+    fi
+    
+    print_item "PFX file size" "$(du -h "$pfx" | cut -f1)"
+    
+    # Test if PFX can be read
+    if [ -n "$pfx_password" ]; then
+        if openssl pkcs12 -in "$pfx" -noout -passin "pass:$pfx_password" 2>/dev/null; then
+            print_item "PFX integrity" "Valid (password protected)"
+        else
+            print_item "PFX integrity" "Error reading PFX file"
+        fi
+    else
+        if openssl pkcs12 -in "$pfx" -noout -passin pass: 2>/dev/null; then
+            print_item "PFX integrity" "Valid (no password)"
+        else
+            print_item "PFX integrity" "Error reading PFX file"
+        fi
+    fi
+}
 
-echo "5. Computing SHA256 fingerprint for WebTransport client..."
-# Generate hex fingerprint for use in WebTransport client configuration
-openssl x509 -in "$CRT" -outform der | openssl dgst -sha256 -binary | xxd -p -c 256 > "$FINGERPRINT_FILE"
+display_certificate_info() {
+    local crt=$1
+    
+    print_section "Certificate Information"
+    
+    if [ ! -f "$crt" ]; then
+        echo "Error: Certificate file not found: $crt"
+        return 1
+    fi
+    
+    local cert_text=$(openssl x509 -in "$crt" -noout -text 2>/dev/null)
+    if [ $? -ne 0 ]; then
+        echo "Error: Failed to read certificate"
+        return 1
+    fi
+    
+    local subject=$(openssl x509 -in "$crt" -noout -subject 2>/dev/null | sed 's/subject=//')
+    local issuer=$(openssl x509 -in "$crt" -noout -issuer 2>/dev/null | sed 's/issuer=//')
+    local serial=$(openssl x509 -in "$crt" -noout -serial 2>/dev/null | sed 's/serial=//')
+    
+    print_item "Subject" "$subject"
+    print_item "Issuer" "$issuer"
+    print_item "Serial Number" "$serial"
+    
+    local key_size=$(echo "$cert_text" | grep -A1 "Public Key Algorithm" | grep "Public-Key:" | grep -o "[0-9]\+" | head -1)
+    if [ -n "$key_size" ]; then
+        print_item "Public Key" "ECC ($key_size Bits)"
+    else
+        print_item "Public Key" "ECC (256 Bits)"
+    fi
+    
+    if echo "$cert_text" | grep -q "prime256v1"; then
+        print_item "Public Key Params" "ECDH_P256"
+    fi
+    
+    local sans=$(echo "$cert_text" | grep -A1 "Subject Alternative Name:" | tail -1 | sed 's/^[[:space:]]*//')
+    if [ -n "$sans" ]; then
+        print_item "Subject Alt Names" "$sans"
+    fi
+    
+    local ski=$(echo "$cert_text" | grep -A1 "Subject Key Identifier:" | tail -1 | sed 's/^[[:space:]]*//' | tr -d ':')
+    if [ -n "$ski" ]; then
+        print_item "Subject Key ID" "${ski:0:32}..."
+    fi
+    
+    local key_usage=$(echo "$cert_text" | grep -A1 "Key Usage:" | tail -1 | sed 's/^[[:space:]]*//')
+    if [ -n "$key_usage" ]; then
+        print_item "Key Usage" "$key_usage"
+    fi
+    
+    local ext_key_usage=$(echo "$cert_text" | grep -A1 "Extended Key Usage:" | tail -1 | sed 's/^[[:space:]]*//')
+    if [ -n "$ext_key_usage" ]; then
+        print_item "Enhanced Key Usage" "$ext_key_usage"
+    fi
+}
 
-# Also generate base64 fingerprint  
-openssl x509 -in "$CRT" -outform der | openssl dgst -sha256 -binary | base64 > "$BUILD_DIR/fingerprint.base64"
+display_fingerprints() {
+    local fingerprint_hex=$1
+    local fingerprint_b64=$2
+    local thumbprint_file=$3
+    
+    print_section "Certificate Fingerprints"
+    
+    if [ ! -f "$thumbprint_file" ]; then
+        echo "Error: Thumbprint file not found: $thumbprint_file"
+        return 1
+    fi
+    
+    if [ ! -f "$fingerprint_hex" ]; then
+        echo "Error: SHA-256 hex file not found: $fingerprint_hex"
+        return 1
+    fi
+    
+    if [ ! -f "$fingerprint_b64" ]; then
+        echo "Error: SHA-256 base64 file not found: $fingerprint_b64"
+        return 1
+    fi
+    
+    echo "SHA-1 Thumbprint (standard):"
+    if [ -s "$thumbprint_file" ]; then
+        cat "$thumbprint_file" | sed 's/\(..\)/\1:/g' | sed 's/:$//' | tr '[:lower:]' '[:upper:]'
+    else
+        echo "Error: Empty thumbprint file"
+    fi
+    echo ""
+    
+    echo "SHA-256 Fingerprint (hex):"
+    if [ -s "$fingerprint_hex" ]; then
+        cat "$fingerprint_hex"
+    else
+        echo "Error: Empty fingerprint file"
+    fi
+    echo ""
+    
+    echo "SHA-256 Fingerprint (base64):"
+    if [ -s "$fingerprint_b64" ]; then
+        cat "$fingerprint_b64"
+    else
+        echo "Error: Empty fingerprint file"
+    fi
+    echo ""
+}
 
-# Clean up temporary files
-rm "$BUILD_DIR/server.csr" "$BUILD_DIR/cert.conf"
+display_usage_examples() {
+    local host=$1
+    local crt=$2
+    local key=$3
+    local pfx=$4
+    
+    print_section "Usage Examples"
+    
+    echo "1. Start WebTransport server with PEM files:"
+    echo "   ./wt_echo_server --cert $crt --key $key --port 4433"
+    echo ""
+    
+    echo "2. Start server with PFX file (if supported):"
+    echo "   ./wt_echo_server --pfx $pfx --port 4433"
+    echo ""
+    
+    echo "3. WebTransport client with certificate hash:"
+    echo "   const transport = new WebTransport('https://$host:4433/', {"
+    echo "     serverCertificateHashes: [{"
+    echo "       algorithm: 'sha-256',"
+    echo "       value: new Uint8Array([/* hex bytes from fingerprint.hex */])"
+    echo "     }]"
+    echo "   });"
+    echo ""
+    
+    echo "4. Install PFX in Windows Certificate Store:"
+    echo "   certlm.msc -> Personal -> Certificates -> Import -> $pfx"
+    echo ""
+    
+    echo "5. Use PFX with IIS or .NET applications:"
+    echo "   Load certificate from PFX file using X509Certificate2 class"
+    echo ""
+    
+    echo "NOTES:"
+    echo "  - Certificate uses ECDSA with secp256r1 as required by WebTransport"
+    echo "  - RSA keys are forbidden by WebTransport specification"
+    echo "  - Self-signed certificates will show browser warnings"
+    echo "  - PFX format is useful for Windows environments"
+    echo "  - For development/testing only"
+}
 
-# Set appropriate permissions
-chmod 600 "$KEY"
-chmod 644 "$CRT"
+HOST="$DEFAULT_HOST"
+OUTPUT_DIR="$DEFAULT_OUTPUT_DIR"
+DAYS="$DEFAULT_DAYS"
+PFX_PASSWORD="$DEFAULT_PFX_PASSWORD"
 
-echo ""
-echo "✅ WebTransport ECDSA certificate generation complete!"
-echo ""
-echo "📁 Generated files:"
-echo "   📄 Certificate: $CRT"
-echo "   🔑 Private key: $KEY" 
-echo "   🔍 SHA256 hex:  $FINGERPRINT_FILE"
-echo "   📋 SHA256 b64:  $BUILD_DIR/fingerprint.base64"
-echo ""
+while [[ $# -gt 0 ]]; do
+    case $1 in
+        -h|--host)
+            HOST="$2"
+            shift 2
+            ;;
+        -o|--output)
+            OUTPUT_DIR="$2"
+            shift 2
+            ;;
+        -d|--days)
+            DAYS="$2"
+            validate_days "$DAYS"
+            shift 2
+            ;;
+        -p|--pfx-password)
+            PFX_PASSWORD="$2"
+            shift 2
+            ;;
+        --help)
+            print_usage
+            exit 0
+            ;;
+        *)
+            echo "Error: Unknown option $1" >&2
+            echo "Use --help for usage information" >&2
+            exit 1
+            ;;
+    esac
+done
 
-# Verify certificate details
-echo "🔍 Certificate verification:"
-echo ""
-echo "Public key algorithm:"
-openssl x509 -in "$CRT" -noout -text | grep "Public Key Algorithm" || echo "  ✓ ECDSA (implicit)"
-echo ""
-echo "Key details:"
-openssl x509 -in "$CRT" -noout -text | grep -A 3 "ASN1 OID: prime256v1" || echo "  ✓ Using secp256r1 (P-256) curve"
-echo ""
-echo "Validity period:"
-openssl x509 -in "$CRT" -noout -dates
-echo ""
-echo "Subject Alternative Names:"
-openssl x509 -in "$CRT" -noout -text | grep -A 5 "Subject Alternative Name:" || echo "  ⚠️  SANs may not be visible in this OpenSSL version"
-echo ""
+print_header "WebTransport Certificate Generator"
 
-# Display fingerprints for easy copying
-echo "🔗 Certificate fingerprints for WebTransport client:"
-echo ""
-echo "SHA256 (hex):"
-cat "$FINGERPRINT_FILE"
-echo ""
-echo "SHA256 (base64):"
-cat "$BUILD_DIR/fingerprint.base64"
-echo ""
-
-echo "🚀 Usage examples:"
-echo ""
-echo "1. Start your WebTransport server:"
-echo "   ./wt_echo_server --cert $CRT --key $KEY --port 4433"
-echo ""
-echo "2. Use in WebTransport client with certificate hash:"
-echo "   const transport = new WebTransport('https://localhost:4433/', {"
-echo "     serverCertificateHashes: [{"
-echo "       algorithm: 'sha-256',"
-echo "       value: new Uint8Array([/* hex bytes from fingerprint.hex */])"
-echo "     }]"
-echo "   });"
-echo ""
-echo "⚠️  Important notes:"
-echo "   • This certificate uses ECDSA with secp256r1 as required by WebTransport"
-echo "   • RSA keys are forbidden by WebTransport specification"  
-echo "   • Validity period is limited to $DAYS days (≤2 weeks per spec)"
-echo "   • This is for development/testing only"
-echo "   • Browsers will show warnings for self-signed certificates"
-echo ""
-
-# Validate the certificate meets WebTransport requirements
-echo "🧪 WebTransport compliance check:"
-echo ""
-
-# Check if it's X.509v3
-VERSION=$(openssl x509 -in "$CRT" -noout -text | grep "Version:" | grep -o "[0-9]" | head -1)
-if [ "$VERSION" = "3" ]; then
-    echo "   ✅ X.509v3 certificate"
+echo "Configuration:"
+print_item "Host" "$HOST"
+print_item "Output Directory" "$OUTPUT_DIR"
+print_item "Validity Days" "$DAYS"
+if [ -n "$PFX_PASSWORD" ]; then
+    print_item "PFX Password" "Set (protected)"
 else
-    echo "   ❌ Not X.509v3 (found version '$VERSION')"
+    print_item "PFX Password" "None (no password)"
 fi
 
-# Check key algorithm
-KEY_ALG=$(openssl x509 -in "$CRT" -noout -text | grep "Public Key Algorithm")
-if echo "$KEY_ALG" | grep -q "id-ecPublicKey\|EC"; then
-    echo "   ✅ ECDSA public key algorithm"
-else
-    echo "   ❌ Not ECDSA public key algorithm"
-fi
+generate_certificate "$HOST" "$OUTPUT_DIR" "$DAYS" "$PFX_PASSWORD"
 
-# Check validity period (should be ≤ 14 days)
-NOT_BEFORE=$(openssl x509 -in "$CRT" -noout -startdate | cut -d= -f2)
-NOT_AFTER=$(openssl x509 -in "$CRT" -noout -enddate | cut -d= -f2)
+crt="$OUTPUT_DIR/$HOST.crt"
+key="$OUTPUT_DIR/$HOST.key"
+pfx="$OUTPUT_DIR/$HOST.pfx"
+fingerprint_hex="$OUTPUT_DIR/fingerprint.hex"
+fingerprint_b64="$OUTPUT_DIR/fingerprint.base64"
+thumbprint_file="$OUTPUT_DIR/thumbprint.hex"
 
-# Cross-platform date parsing (works on both macOS and Linux)
-if [[ "$OSTYPE" == "darwin"* ]]; then
-    # macOS
-    NOT_BEFORE_EPOCH=$(date -j -f "%b %d %H:%M:%S %Y %Z" "$NOT_BEFORE" +%s 2>/dev/null || date -j -f "%b %d %T %Y %Z" "$NOT_BEFORE" +%s)
-    NOT_AFTER_EPOCH=$(date -j -f "%b %d %H:%M:%S %Y %Z" "$NOT_AFTER" +%s 2>/dev/null || date -j -f "%b %d %T %Y %Z" "$NOT_AFTER" +%s)
-else
-    # Linux
-    NOT_BEFORE_EPOCH=$(date -d "$NOT_BEFORE" +%s)
-    NOT_AFTER_EPOCH=$(date -d "$NOT_AFTER" +%s)
-fi
+display_certificate_info "$crt"
+verify_certificate "$crt" "$DAYS"
+verify_pfx "$pfx" "$PFX_PASSWORD"
+display_fingerprints "$fingerprint_hex" "$fingerprint_b64" "$thumbprint_file"
+display_usage_examples "$HOST" "$crt" "$key" "$pfx"
 
-VALIDITY_SECONDS=$((NOT_AFTER_EPOCH - NOT_BEFORE_EPOCH))
-VALIDITY_DAYS=$((VALIDITY_SECONDS / 86400))
-
-if [ $VALIDITY_DAYS -le 14 ]; then
-    echo "   ✅ Validity period: $VALIDITY_DAYS days (≤14 days)"
-else
-    echo "   ❌ Validity period: $VALIDITY_DAYS days (>14 days)"
-fi
-
-echo ""
-echo "🎉 Certificate ready for WebTransport testing!"
+print_header "Certificate Generation Complete"

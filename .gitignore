@@ -53,6 +53,11 @@ Thumbs.db
 *~
 *.tmp
 *.temp
+*.crt
+*.key
+*.bin
+*.base64
+*.hex
 
 # Visual Studio
 .vs/
@@ -172,3 +177,5 @@ scan-build/
 # Package config
 *.pc
 .cache
+/tools/certs
+certs

@@ -20,11 +20,13 @@
 
 #ifdef _WIN32
 #include <winsock2.h>
+#include <io.h>
 #else
 #include <arpa/inet.h>
 #include <netinet/in.h>
 #include <sys/socket.h>
 #include <unistd.h>
+#include <ctype.h>
 #endif
 
 #include "wtf_version.h"   
@@ -334,20 +336,19 @@ typedef struct wtf_connection {
 } wtf_connection;
 
 typedef struct wtf_server {
-  wtf_context_t *context;
-  wtf_server_config_t config;
-  wtf_server_state_t state;
+    wtf_context_t *context;
+    wtf_server_config_t config;
+    wtf_server_state_t state;
 
-  HQUIC listener;
-  HQUIC configuration;
-  QUIC_CERTIFICATE_FILE *cert_file;
+    HQUIC listener;
+    HQUIC configuration;
+    QUIC_CREDENTIAL_CONFIG *cred_config;
 
-  connection_set connections;
-  mtx_t connections_mutex;
+    connection_set connections;
+    mtx_t connections_mutex;
 
-  wtf_server_statistics_t stats;
-
-  mtx_t mutex;
+    wtf_server_statistics_t stats;
+    mtx_t mutex;
 } wtf_server;
 
 typedef struct wtf_context {
@@ -380,14 +381,11 @@ static wtf_result_t wtf_parse_connect_headers(wtf_http3_stream *stream,
 static bool wtf_send_connect_response(wtf_http3_stream *stream,
                                       uint16_t status_code);
 
-static QUIC_STATUS QUIC_API wtf_stream_callback(HQUIC Stream, void *Context,
-                                                QUIC_STREAM_EVENT *Event);
-static QUIC_STATUS QUIC_API wtf_upgraded_stream_callback(
-    HQUIC Stream, void *Context, QUIC_STREAM_EVENT *Event);
-static QUIC_STATUS QUIC_API wtf_connection_callback(
-    HQUIC Connection, void *Context, QUIC_CONNECTION_EVENT *Event);
-static QUIC_STATUS QUIC_API wtf_listener_callback(HQUIC Listener, void *Context,
-                                                  QUIC_LISTENER_EVENT *Event);
+
+static QUIC_STREAM_CALLBACK wtf_stream_callback;
+static QUIC_STREAM_CALLBACK wtf_upgraded_stream_callback;
+static QUIC_CONNECTION_CALLBACK wtf_connection_callback;
+static QUIC_LISTENER_CALLBACK wtf_listener_callback;
 
 static bool wtf_qpack_initialize_encoder(wtf_connection *conn);
 static void wtf_qpack_send_encoder_data(wtf_connection *conn);
@@ -412,7 +410,7 @@ static wtf_result_t wtf_stream_send_internal(wtf_stream *stream,
 static bool wtf_stream_process_received_data(wtf_stream *stream,
                                              const uint8_t *data, size_t length,
                                              bool fin);
-static void wtf_stream_handle_reset(wtf_stream *stream, uint32_t error_code);
+static void wtf_stream_handle_reset(wtf_stream *stream, QUIC_UINT62 error_code);
 static uint32_t wtf_map_webtransport_error_to_h3(uint32_t wt_error);
 static uint32_t wtf_map_h3_error_to_webtransport(uint64_t h3_error);
 
@@ -449,8 +447,8 @@ static wtf_session *wtf_connection_find_session(wtf_connection *conn,
 
 static void wtf_settings_init(wtf_settings *settings);
 static bool wtf_write_settings_frame(wtf_connection *conn, uint8_t *buffer,
-                                     uint32_t buffer_size,
-                                     uint32_t *frame_length);
+                                     size_t buffer_size,
+                                     size_t *frame_length);
 static bool wtf_parse_settings_frame(wtf_connection *conn, const uint8_t *data,
                                      size_t data_len);
 static bool wtf_send_settings_on_control_stream(wtf_connection *conn);
@@ -550,7 +548,72 @@ static void wtf_log_internal(wtf_context *ctx, wtf_log_level_t level,
 }
 #endif
 
+static bool wtf_path_valid(const char* path) {
+    if (path == NULL) {
+        return false;
+    }
+    
+#ifdef _WIN32
+    return _access(path, 0) == 0;
+#else
+    return access(path, F_OK) == 0;
+#endif
+}
+
+static bool wtf_parse_thumbprint(const char *hex_thumbprint, uint8_t sha_hash[20]) {
+    if (!hex_thumbprint || !sha_hash) {
+        return false;
+    }
+    
+    size_t hex_len = strlen(hex_thumbprint);
+    
+    // Remove common separators and validate length
+    size_t clean_len = 0;
+    char clean_hex[41]; // 40 chars + null terminator
+    
+    for (size_t i = 0; i < hex_len && clean_len < 40; i++) {
+        char c = hex_thumbprint[i];
+        if (c == ':' || c == '-' || c == ' ') {
+            continue; // Skip separators
+        }
+        if (!isxdigit(c)) {
+            return false; // Invalid hex character
+        }
+        clean_hex[clean_len++] = tolower(c);
+    }
+    
+    if (clean_len != 40) {
+        return false; // SHA1 hash must be exactly 40 hex characters
+    }
+    
+    clean_hex[40] = '\0';
+    
+    // Convert hex string to binary
+    for (int i = 0; i < 20; i++) {
+        char byte_str[3] = {clean_hex[i * 2], clean_hex[i * 2 + 1], '\0'};
+        char *endptr;
+        unsigned long byte_val = strtoul(byte_str, &endptr, 16);
+        
+        if (*endptr != '\0' || byte_val > 255) {
+            return false;
+        }
+        
+        sha_hash[i] = (uint8_t)byte_val;
+    }
+    
+    return true;
+}
+
+
 static wtf_result_t wtf_quic_status_to_result(QUIC_STATUS status) {
+  if (status == QUIC_STATUS_CONNECTION_REFUSED ||
+      status == QUIC_STATUS_ABORTED) {
+    return WTF_ERROR_CONNECTION_ABORTED;
+  }
+  if (status == QUIC_STATUS_TLS_ERROR) {
+    return WTF_ERROR_TLS_HANDSHAKE_FAILED;
+  }
+  
   switch (status) {
   case QUIC_STATUS_SUCCESS:
     return WTF_SUCCESS;
@@ -558,14 +621,10 @@ static wtf_result_t wtf_quic_status_to_result(QUIC_STATUS status) {
     return WTF_ERROR_INVALID_PARAMETER;
   case QUIC_STATUS_OUT_OF_MEMORY:
     return WTF_ERROR_OUT_OF_MEMORY;
-  case QUIC_STATUS_CONNECTION_REFUSED:
   case QUIC_STATUS_CONNECTION_TIMEOUT:
-  case QUIC_STATUS_ABORTED:
     return WTF_ERROR_CONNECTION_ABORTED;
   case QUIC_STATUS_PROTOCOL_ERROR:
     return WTF_ERROR_PROTOCOL_VIOLATION;
-  case QUIC_STATUS_TLS_ERROR:
-    return WTF_ERROR_TLS_HANDSHAKE_FAILED;
   default:
     return WTF_ERROR_INTERNAL;
   }
@@ -596,6 +655,91 @@ static uint32_t wtf_map_h3_error_to_webtransport(uint64_t h3_error) {
   uint64_t shifted = h3_error - WTF_WEBTRANSPORT_APPLICATION_ERROR_BASE;
   return (uint32_t)(shifted - (shifted / 0x1f));
 }
+
+static char *wtf_strdup(const char *s) {
+  if (s == NULL) {
+    #ifdef EINVAL
+      errno = EINVAL;
+    #endif
+    return NULL;
+  }
+  
+  #if defined(_POSIX_C_SOURCE) && _POSIX_C_SOURCE >= 200809L
+    return strdup(s);
+  #elif defined(_WIN32)
+    return _strdup(s);
+  #endif
+  
+  size_t siz = strlen(s) + 1;
+  char *y = malloc(siz);
+  if (y != NULL) {
+    memcpy(y, s, siz);
+  } else {
+    #ifdef ENOMEM
+      errno = ENOMEM;
+    #endif
+  }
+  return y;
+}
+
+static size_t wtf_strncpy(char *dest, const char *src, size_t dest_size) {
+    if (!dest || dest_size == 0) {
+        #ifdef EINVAL
+            errno = EINVAL;
+        #endif
+        return 0;
+    }
+    
+    if (!src) {
+        dest[0] = '\0';
+        return 0;
+    }
+    
+#ifdef _WIN32
+    errno_t err = strcpy_s(dest, dest_size, src);
+    if (err != 0) {
+        dest[0] = '\0';
+        return 0;
+    }
+    return strlen(dest);
+#else
+    size_t result = strlcpy(dest, src, dest_size);
+    if (result >= dest_size) {
+        return dest_size - 1;
+    }
+    return result;
+#endif
+}
+
+static char *wtf_strndup(const char *s, size_t n) {
+  if (s == NULL) {
+    #ifdef EINVAL
+      errno = EINVAL;
+    #endif
+    return NULL;
+  }
+  
+  #if defined(_POSIX_C_SOURCE) && _POSIX_C_SOURCE >= 200809L
+    return strndup(s, n);
+  #endif
+  
+  size_t len = 0;
+  while (len < n && s[len] != '\0') {
+    len++;
+  }
+  
+  char *y = malloc(len + 1);
+  if (y != NULL) {
+    memcpy(y, s, len);
+    y[len] = '\0';
+  } else {
+    #ifdef ENOMEM
+      errno = ENOMEM;
+    #endif
+  }
+  return y;
+}
+
 
 static wtf_datagram *wtf_datagram_create(const uint8_t *data, size_t length,
                                          uint64_t session_id,
@@ -934,23 +1078,23 @@ static int wtf_header_process_header(void *context,
     if (name_len == 7 && strncmp(name, ":method", 7) == 0) {
       if (request->method)
         free(request->method);
-      request->method = strndup(value, value_len);
+      request->method = wtf_strndup(value, value_len);
     } else if (name_len == 7 && strncmp(name, ":scheme", 7) == 0) {
       if (request->scheme)
         free(request->scheme);
-      request->scheme = strndup(value, value_len);
+      request->scheme = wtf_strndup(value, value_len);
     } else if (name_len == 10 && strncmp(name, ":authority", 10) == 0) {
       if (request->authority)
         free(request->authority);
-      request->authority = strndup(value, value_len);
+      request->authority = wtf_strndup(value, value_len);
     } else if (name_len == 5 && strncmp(name, ":path", 5) == 0) {
       if (request->path)
         free(request->path);
-      request->path = strndup(value, value_len);
+      request->path = wtf_strndup(value, value_len);
     } else if (name_len == 9 && strncmp(name, ":protocol", 9) == 0) {
       if (request->protocol)
         free(request->protocol);
-      request->protocol = strndup(value, value_len);
+      request->protocol = wtf_strndup(value, value_len);
     } else {
       if (ctx->connection && ctx->connection->server &&
           ctx->connection->server->context) {
@@ -964,7 +1108,7 @@ static int wtf_header_process_header(void *context,
     if (name_len == 6 && strncmp(name, "origin", 6) == 0) {
       if (request->origin)
         free(request->origin);
-      request->origin = strndup(value, value_len);
+      request->origin = wtf_strndup(value, value_len);
     } else {
       if (ctx->connection && ctx->connection->server &&
           ctx->connection->server->context) {
@@ -1011,12 +1155,12 @@ static void wtf_settings_init(wtf_settings *settings) {
 }
 
 static bool wtf_write_settings_frame(wtf_connection *conn, uint8_t *buffer,
-                                     uint32_t buffer_size,
-                                     uint32_t *frame_length) {
+                                     size_t buffer_size,
+                                     size_t *frame_length) {
   if (!conn || !buffer || !frame_length)
     return false;
 
-  uint32_t offset = 0;
+  size_t offset = 0;
   size_t bytes_written;
 
   if (!wtf_varint_encode(WTF_FRAME_SETTINGS, buffer + offset,
@@ -1025,7 +1169,7 @@ static bool wtf_write_settings_frame(wtf_connection *conn, uint8_t *buffer,
   }
   offset += bytes_written;
 
-  uint32_t settings_size = 0;
+  size_t settings_size = 0;
   settings_size +=
       wtf_varint_size(WTF_SETTING_QPACK_MAX_TABLE_CAPACITY) +
       wtf_varint_size(conn->local_settings.qpack_max_table_capacity);
@@ -1087,7 +1231,7 @@ static bool wtf_send_settings_on_control_stream(wtf_connection *conn) {
     return false;
   }
 
-  uint32_t buffer_size = 512;
+  size_t buffer_size = 512;
 
   void *send_buffer_raw = malloc(sizeof(QUIC_BUFFER) + buffer_size);
   if (!send_buffer_raw) {
@@ -1098,7 +1242,7 @@ static bool wtf_send_settings_on_control_stream(wtf_connection *conn) {
 
   QUIC_BUFFER *send_buffer = (QUIC_BUFFER *)send_buffer_raw;
   uint8_t *data = (uint8_t *)send_buffer_raw + sizeof(QUIC_BUFFER);
-  uint32_t settings_length;
+  size_t settings_length;
 
   if (!wtf_write_settings_frame(conn, data, buffer_size, &settings_length)) {
     WTF_LOG_ERROR(conn->server->context, "settings",
@@ -1107,8 +1251,9 @@ static bool wtf_send_settings_on_control_stream(wtf_connection *conn) {
     return false;
   }
 
+
   send_buffer->Buffer = data;
-  send_buffer->Length = settings_length;
+  send_buffer->Length = (uint32_t) settings_length;
 
   QUIC_STATUS status = conn->server->context->quic_api->StreamSend(
       conn->control_stream->quic_stream, send_buffer, 1, QUIC_SEND_FLAG_NONE,
@@ -1616,7 +1761,7 @@ static bool wtf_stream_process_received_data(wtf_stream *stream,
   return true;
 }
 
-static void wtf_stream_handle_reset(wtf_stream *stream, uint32_t error_code) {
+static void wtf_stream_handle_reset(wtf_stream *stream, QUIC_UINT62 error_code) {
   if (!stream)
     return;
 
@@ -1950,7 +2095,7 @@ static bool wtf_session_process_capsule(wtf_session *session,
       if (reason_len > 1024) {
         reason_len = 1024;
       }
-      reason = strndup((const char *)(capsule->data + 4), reason_len);
+      reason = wtf_strndup((const char *)(capsule->data + 4), reason_len);
     }
 
     WTF_LOG_INFO(session->connection->server->context, "session",
@@ -2349,7 +2494,7 @@ static bool wtf_send_connect_response(wtf_http3_stream *stream,
   QUIC_BUFFER *send_buffer = (QUIC_BUFFER *)response_buffer_raw;
   uint8_t *response_data = (uint8_t *)response_buffer_raw + sizeof(QUIC_BUFFER);
 
-  uint32_t offset = 0;
+  size_t offset = 0;
   size_t bytes_written;
 
   if (!wtf_varint_encode(WTF_FRAME_HEADERS, response_data + offset,
@@ -2375,7 +2520,7 @@ static bool wtf_send_connect_response(wtf_http3_stream *stream,
     status_header.name_offset = 0;
     status_header.name_len = 7;
     status_header.val_offset = 7;
-    status_header.val_len = strlen(status_value);
+    status_header.val_len = (lsxpack_strlen_t) strlen(status_value);
 
     memcpy(status_header.buf, ":status", 7);
     memcpy(status_header.buf + 7, status_value, status_header.val_len);
@@ -2393,7 +2538,7 @@ static bool wtf_send_connect_response(wtf_http3_stream *stream,
                              (enum lsqpack_enc_flags)0) == LQES_OK) {
 
         enum lsqpack_enc_header_flags hflags;
-        int pref_sz = lsqpack_enc_end_header(&conn->qpack.encoder, status_data,
+        size_t pref_sz = lsqpack_enc_end_header(&conn->qpack.encoder, status_data,
                                              prefix_len, &hflags);
         if (pref_sz >= 0) {
           status_len = (uint32_t)(pref_sz + header_len);
@@ -2434,7 +2579,7 @@ static bool wtf_send_connect_response(wtf_http3_stream *stream,
   offset += status_len;
 
   send_buffer->Buffer = response_data;
-  send_buffer->Length = offset;
+  send_buffer->Length = (uint32_t)offset;
 
   QUIC_STATUS quic_status = conn->server->context->quic_api->StreamSend(
       stream->quic_stream, send_buffer, 1, QUIC_SEND_FLAG_NONE,
@@ -3321,7 +3466,7 @@ static QUIC_STATUS QUIC_API wtf_upgraded_stream_callback(
     mtx_unlock(&wt_stream->session->streams_mutex);
 
     uint8_t header[32];
-    uint32_t header_offset = 0;
+    size_t header_offset = 0;
     size_t bytes_written;
 
     if (wt_stream->type == WTF_STREAM_UNIDIRECTIONAL) {
@@ -3370,7 +3515,7 @@ static QUIC_STATUS QUIC_API wtf_upgraded_stream_callback(
 
         memcpy(data, header, header_offset);
         send_buffer->Buffer = data;
-        send_buffer->Length = header_offset;
+        send_buffer->Length = (uint32_t)header_offset;
 
         QUIC_STATUS status = conn->server->context->quic_api->StreamSend(
             Stream, send_buffer, 1, QUIC_SEND_FLAG_NONE, send_buffer_raw);
@@ -3475,7 +3620,7 @@ static QUIC_STATUS QUIC_API wtf_upgraded_stream_callback(
   }
 
   case QUIC_STREAM_EVENT_PEER_SEND_ABORTED: {
-    uint32_t error_code = Event->PEER_SEND_ABORTED.ErrorCode;
+    QUIC_UINT62 error_code = Event->PEER_SEND_ABORTED.ErrorCode;
     WTF_LOG_DEBUG(conn->server->context, "webtransport",
                   "WebTransport stream peer send aborted on stream %llu: 0x%x",
                   (unsigned long long)wt_stream->stream_id, error_code);
@@ -3579,7 +3724,7 @@ static QUIC_STATUS QUIC_API wtf_stream_callback(HQUIC Stream, void *Context,
 
       QUIC_BUFFER *send_buffer = (QUIC_BUFFER *)send_buffer_raw;
       uint8_t *data = (uint8_t *)send_buffer_raw + sizeof(QUIC_BUFFER);
-      uint32_t offset = 0;
+      size_t offset = 0;
       size_t bytes_written;
 
       if (!wtf_varint_encode(stream->type, data + offset, total_size - offset,
@@ -3603,7 +3748,7 @@ static QUIC_STATUS QUIC_API wtf_stream_callback(HQUIC Stream, void *Context,
       }
 
       send_buffer->Buffer = data;
-      send_buffer->Length = offset;
+      send_buffer->Length = (uint32_t)offset;
 
       QUIC_STATUS status = conn->server->context->quic_api->StreamSend(
           Stream, send_buffer, 1, QUIC_SEND_FLAG_NONE, send_buffer_raw);
@@ -4141,6 +4286,83 @@ void wtf_context_destroy(wtf_context_t *context) {
   free(context);
 }
 
+static void wtf_cleanup_server_cred_config(wtf_server *srv) {
+    if (!srv || !srv->cred_config) return;
+    
+    QUIC_CREDENTIAL_CONFIG *cred_config = srv->cred_config;
+    
+    switch (cred_config->Type) {
+        case QUIC_CREDENTIAL_TYPE_CERTIFICATE_FILE:
+            if (cred_config->CertificateFile) {
+                free((void*)cred_config->CertificateFile->CertificateFile);
+                free((void*)cred_config->CertificateFile->PrivateKeyFile);
+                free(cred_config->CertificateFile);
+            }
+            break;
+            
+        case QUIC_CREDENTIAL_TYPE_CERTIFICATE_FILE_PROTECTED:
+            if (cred_config->CertificateFileProtected) {
+                free((void*)cred_config->CertificateFileProtected->CertificateFile);
+                free((void*)cred_config->CertificateFileProtected->PrivateKeyFile);
+                if (cred_config->CertificateFileProtected->PrivateKeyPassword) {
+                    size_t pwd_len = strlen(cred_config->CertificateFileProtected->PrivateKeyPassword);
+                    memset((void*)cred_config->CertificateFileProtected->PrivateKeyPassword, 0, pwd_len);
+                    free((void*)cred_config->CertificateFileProtected->PrivateKeyPassword);
+                }
+                free(cred_config->CertificateFileProtected);
+            }
+            break;
+            
+        case QUIC_CREDENTIAL_TYPE_CERTIFICATE_HASH:
+            if (cred_config->CertificateHash) {
+                free(cred_config->CertificateHash);
+            }
+            break;
+            
+        case QUIC_CREDENTIAL_TYPE_CERTIFICATE_HASH_STORE:
+            if (cred_config->CertificateHashStore) {
+                free(cred_config->CertificateHashStore);
+            }
+            break;
+            
+        case QUIC_CREDENTIAL_TYPE_CERTIFICATE_PKCS12:
+            if (cred_config->CertificatePkcs12) {
+                if (cred_config->CertificatePkcs12->Asn1Blob) {
+                    memset((void*)cred_config->CertificatePkcs12->Asn1Blob, 0, 
+                           cred_config->CertificatePkcs12->Asn1BlobLength);
+                    free((void*)cred_config->CertificatePkcs12->Asn1Blob);
+                }
+                if (cred_config->CertificatePkcs12->PrivateKeyPassword) {
+                    size_t pwd_len = strlen(cred_config->CertificatePkcs12->PrivateKeyPassword);
+                    memset((void*)cred_config->CertificatePkcs12->PrivateKeyPassword, 0, pwd_len);
+                    free((void*)cred_config->CertificatePkcs12->PrivateKeyPassword);
+                }
+                free(cred_config->CertificatePkcs12);
+            }
+            break;
+            
+        case QUIC_CREDENTIAL_TYPE_CERTIFICATE_CONTEXT:
+            // Certificate context is managed externally, nothing to free
+            break;
+            
+        case QUIC_CREDENTIAL_TYPE_NONE:
+        default:
+            break;
+    }
+    
+    // Clean up principal and CA cert file if allocated
+    if (cred_config->Principal) {
+        free((void*)cred_config->Principal);
+    }
+    if (cred_config->CaCertificateFile) {
+        free((void*)cred_config->CaCertificateFile);
+    }
+    
+    // Free the credential config itself
+    free(srv->cred_config);
+    srv->cred_config = NULL;
+}
+
 wtf_result_t wtf_server_create(wtf_context_t *context,
                                const wtf_server_config_t *config,
                                wtf_server_t **server) {
@@ -4172,7 +4394,6 @@ wtf_result_t wtf_server_create(wtf_context_t *context,
   srv->context = ctx;
   srv->config = *config;
   srv->state = WTF_SERVER_STOPPED;
-  srv->cert_file = NULL;
 
   connection_set_init(&srv->connections);
 
@@ -4213,32 +4434,173 @@ wtf_result_t wtf_server_create(wtf_context_t *context,
   settings.ConnFlowControlWindow = 1024 * 1024;
   settings.IsSet.ConnFlowControlWindow = TRUE;
 
-  QUIC_CREDENTIAL_CONFIG cred_config = {0};
-  cred_config.Flags = QUIC_CREDENTIAL_FLAG_NONE;
-
-  if (config->cert_hash) {
-    cred_config.Type = QUIC_CREDENTIAL_TYPE_CERTIFICATE_HASH;
-    cred_config.CertificateHash = (void *)config->cert_hash;
-  } else if (config->cert_file && config->key_file) {
-    cred_config.Type = QUIC_CREDENTIAL_TYPE_CERTIFICATE_FILE;
-    srv->cert_file = malloc(sizeof(QUIC_CERTIFICATE_FILE));
-    if (!srv->cert_file) {
-      result = WTF_ERROR_OUT_OF_MEMORY;
-      goto cleanup_connections_mutex;
-    }
-    srv->cert_file->CertificateFile = strdup(config->cert_file);
-    srv->cert_file->PrivateKeyFile = strdup(config->key_file);
-    if (!srv->cert_file->CertificateFile || !srv->cert_file->PrivateKeyFile) {
-      result = WTF_ERROR_OUT_OF_MEMORY;
-      goto cleanup_cert_file;
-    }
-
-    cred_config.CertificateFile = srv->cert_file;
-
-  } else {
-    WTF_LOG_ERROR(ctx, "server", "No certificate provided");
+  if (config->cert_config == NULL) {
+    WTF_LOG_ERROR(ctx, "server", "Certificate configuration is required");
     result = WTF_ERROR_INVALID_PARAMETER;
     goto cleanup_connections_mutex;
+  }
+
+  srv->cred_config = malloc(sizeof(QUIC_CREDENTIAL_CONFIG));
+  if (!srv->cred_config) {
+    result = WTF_ERROR_OUT_OF_MEMORY;
+    goto cleanup_connections_mutex;
+  }
+
+  memset(srv->cred_config, 0, sizeof(QUIC_CREDENTIAL_CONFIG));
+  srv->cred_config->Flags = QUIC_CREDENTIAL_FLAG_NONE;
+
+  switch (config->cert_config->cert_type) {
+    case WTF_CERT_TYPE_NONE:
+        srv->cred_config->Type = QUIC_CREDENTIAL_TYPE_NONE;
+        srv->cred_config->Flags |= QUIC_CREDENTIAL_FLAG_CLIENT;
+        break;
+        
+    case WTF_CERT_TYPE_FILE:
+        srv->cred_config->Type = QUIC_CREDENTIAL_TYPE_CERTIFICATE_FILE;
+        srv->cred_config->CertificateFile = malloc(sizeof(QUIC_CERTIFICATE_FILE));
+        if (!srv->cred_config->CertificateFile) {
+            result = WTF_ERROR_OUT_OF_MEMORY;
+            goto cleanup_cred_config;
+        }
+        
+        if (!config->cert_config->cert_data.file.cert_path || 
+            !config->cert_config->cert_data.file.key_path ||
+            !wtf_path_valid(config->cert_config->cert_data.file.cert_path) ||
+            !wtf_path_valid(config->cert_config->cert_data.file.key_path)) {
+            WTF_LOG_ERROR(ctx, "server", "Invalid certificate or key file path");
+            result = WTF_ERROR_INVALID_PARAMETER;
+            goto cleanup_cred_config;
+        }
+        
+        srv->cred_config->CertificateFile->CertificateFile = wtf_strdup(config->cert_config->cert_data.file.cert_path);
+        srv->cred_config->CertificateFile->PrivateKeyFile = wtf_strdup(config->cert_config->cert_data.file.key_path);
+        
+        if (!srv->cred_config->CertificateFile->CertificateFile || !srv->cred_config->CertificateFile->PrivateKeyFile) {
+            result = WTF_ERROR_OUT_OF_MEMORY;
+            goto cleanup_cred_config;
+        }
+        break;
+        
+    case WTF_CERT_TYPE_FILE_PROTECTED:
+        srv->cred_config->Type = QUIC_CREDENTIAL_TYPE_CERTIFICATE_FILE_PROTECTED;
+        srv->cred_config->CertificateFileProtected = malloc(sizeof(QUIC_CERTIFICATE_FILE_PROTECTED));
+        if (!srv->cred_config->CertificateFileProtected) {
+            result = WTF_ERROR_OUT_OF_MEMORY;
+            goto cleanup_cred_config;
+        }
+        
+        if (!config->cert_config->cert_data.protected_file.cert_path ||
+            !config->cert_config->cert_data.protected_file.key_path ||
+            !config->cert_config->cert_data.protected_file.password ||
+            !wtf_path_valid(config->cert_config->cert_data.protected_file.cert_path) ||
+            !wtf_path_valid(config->cert_config->cert_data.protected_file.key_path)) {
+            WTF_LOG_ERROR(ctx, "server", "Invalid certificate or key file path, or missing password for protected certificate");
+            result = WTF_ERROR_INVALID_PARAMETER;
+            goto cleanup_cred_config;
+        }
+        
+        srv->cred_config->CertificateFileProtected->CertificateFile = wtf_strdup(config->cert_config->cert_data.protected_file.cert_path);
+        srv->cred_config->CertificateFileProtected->PrivateKeyFile = wtf_strdup(config->cert_config->cert_data.protected_file.key_path);
+        srv->cred_config->CertificateFileProtected->PrivateKeyPassword = wtf_strdup(config->cert_config->cert_data.protected_file.password);
+        
+        if (!srv->cred_config->CertificateFileProtected->CertificateFile || 
+            !srv->cred_config->CertificateFileProtected->PrivateKeyFile ||
+            !srv->cred_config->CertificateFileProtected->PrivateKeyPassword) {
+            result = WTF_ERROR_OUT_OF_MEMORY;
+            goto cleanup_cred_config;
+        }
+        break;
+        
+    case WTF_CERT_TYPE_HASH:
+        srv->cred_config->Type = QUIC_CREDENTIAL_TYPE_CERTIFICATE_HASH;
+        srv->cred_config->CertificateHash = malloc(sizeof(QUIC_CERTIFICATE_HASH));
+        if (!srv->cred_config->CertificateHash) {
+            result = WTF_ERROR_OUT_OF_MEMORY;
+            goto cleanup_cred_config;
+        }
+        
+        if (!wtf_parse_thumbprint(config->cert_config->cert_data.hash.thumbprint,
+                                 srv->cred_config->CertificateHash->ShaHash)) {
+            WTF_LOG_ERROR(ctx, "server", "Invalid certificate thumbprint format");
+            result = WTF_ERROR_INVALID_PARAMETER;
+            goto cleanup_cred_config;
+        }
+        break;
+        
+    case WTF_CERT_TYPE_HASH_STORE:
+        srv->cred_config->Type = QUIC_CREDENTIAL_TYPE_CERTIFICATE_HASH_STORE;
+        srv->cred_config->CertificateHashStore = malloc(sizeof(QUIC_CERTIFICATE_HASH_STORE));
+        if (!srv->cred_config->CertificateHashStore) {
+            result = WTF_ERROR_OUT_OF_MEMORY;
+            goto cleanup_cred_config;
+        }
+        
+        if (!config->cert_config->cert_data.hash_store.store_name) {
+            WTF_LOG_ERROR(ctx, "server", "Certificate store name is required");
+            result = WTF_ERROR_INVALID_PARAMETER;
+            goto cleanup_cred_config;
+        }
+
+        srv->cred_config->CertificateHashStore->Flags = 0; // Default flags
+        
+        if (!wtf_parse_thumbprint(config->cert_config->cert_data.hash_store.thumbprint,
+                                 srv->cred_config->CertificateHashStore->ShaHash)) {
+            WTF_LOG_ERROR(ctx, "server", "Invalid certificate thumbprint format");
+            result = WTF_ERROR_INVALID_PARAMETER;
+            goto cleanup_cred_config;
+        }
+        
+        wtf_strncpy(srv->cred_config->CertificateHashStore->StoreName,
+                   config->cert_config->cert_data.hash_store.store_name,
+                   sizeof(srv->cred_config->CertificateHashStore->StoreName));
+        break;
+        
+    case WTF_CERT_TYPE_CONTEXT:
+        srv->cred_config->Type = QUIC_CREDENTIAL_TYPE_CERTIFICATE_CONTEXT;
+        srv->cred_config->CertificateContext = (QUIC_CERTIFICATE*)config->cert_config->cert_data.context;
+        break;
+        
+    case WTF_CERT_TYPE_PKCS12:
+        srv->cred_config->Type = QUIC_CREDENTIAL_TYPE_CERTIFICATE_PKCS12;
+        srv->cred_config->CertificatePkcs12 = malloc(sizeof(QUIC_CERTIFICATE_PKCS12));
+        if (!srv->cred_config->CertificatePkcs12) {
+            result = WTF_ERROR_OUT_OF_MEMORY;
+            goto cleanup_cred_config;
+        }
+        
+        if (!config->cert_config->cert_data.pkcs12.data || 
+            config->cert_config->cert_data.pkcs12.data_size == 0) {
+            WTF_LOG_ERROR(ctx, "server", "Invalid PKCS#12 certificate data");
+            result = WTF_ERROR_INVALID_PARAMETER;
+            goto cleanup_cred_config;
+        }
+        
+        srv->cred_config->CertificatePkcs12->Asn1Blob = malloc(config->cert_config->cert_data.pkcs12.data_size);
+        if (!srv->cred_config->CertificatePkcs12->Asn1Blob) {
+            result = WTF_ERROR_OUT_OF_MEMORY;
+            goto cleanup_cred_config;
+        }
+        
+        memcpy((void*)srv->cred_config->CertificatePkcs12->Asn1Blob,
+               config->cert_config->cert_data.pkcs12.data,
+               config->cert_config->cert_data.pkcs12.data_size);
+        srv->cred_config->CertificatePkcs12->Asn1BlobLength = (uint32_t)config->cert_config->cert_data.pkcs12.data_size;
+        srv->cred_config->CertificatePkcs12->PrivateKeyPassword = config->cert_config->cert_data.pkcs12.password ? wtf_strdup(config->cert_config->cert_data.pkcs12.password) : NULL;
+        break;
+        
+    default:
+        WTF_LOG_ERROR(ctx, "server", "Invalid certificate type: %d", config->cert_config->cert_type);
+        result = WTF_ERROR_INVALID_PARAMETER;
+        goto cleanup_cred_config;
+  }
+
+  if (config->cert_config->principal) {
+    srv->cred_config->Principal = wtf_strdup(config->cert_config->principal);
+  }
+
+  if (config->cert_config->ca_cert_file) {
+    srv->cred_config->CaCertificateFile = wtf_strdup(config->cert_config->ca_cert_file);
+    srv->cred_config->Flags |= QUIC_CREDENTIAL_FLAG_SET_CA_CERTIFICATE_FILE;
   }
 
   const char *alpn = WTF_ALPN;
@@ -4251,11 +4613,11 @@ wtf_result_t wtf_server_create(wtf_context_t *context,
   if (QUIC_FAILED(status)) {
     WTF_LOG_ERROR(ctx, "server", "ConfigurationOpen failed: 0x%x", status);
     result = wtf_quic_status_to_result(status);
-    goto cleanup_cert_file;
+    goto cleanup_cred_config;
   }
 
   status = ctx->quic_api->ConfigurationLoadCredential(srv->configuration,
-                                                      &cred_config);
+                                                      srv->cred_config);
   if (QUIC_FAILED(status)) {
     WTF_LOG_ERROR(ctx, "server", "ConfigurationLoadCredential failed: 0x%x",
                   status);
@@ -4274,16 +4636,8 @@ wtf_result_t wtf_server_create(wtf_context_t *context,
 cleanup_configuration:
   ctx->quic_api->ConfigurationClose(srv->configuration);
 
-cleanup_cert_file:
-  if (srv->cert_file) {
-    if (srv->cert_file->CertificateFile) {
-      free((void *)srv->cert_file->CertificateFile);
-    }
-    if (srv->cert_file->PrivateKeyFile) {
-      free((void *)srv->cert_file->PrivateKeyFile);
-    }
-    free(srv->cert_file);
-  }
+cleanup_cred_config:
+  wtf_cleanup_server_cred_config(srv);
 
 cleanup_connections_mutex:
   mtx_destroy(&srv->connections_mutex);
@@ -4375,6 +4729,10 @@ wtf_result_t wtf_server_stop(wtf_server_t *server) {
 
   wtf_server *srv = server;
 
+  if (!srv->context) {
+    return WTF_ERROR_INVALID_STATE;
+  }
+
   mtx_lock(&srv->mutex);
 
   if (srv->state != WTF_SERVER_LISTENING) {
@@ -4461,16 +4819,8 @@ void wtf_server_destroy(wtf_server_t *server) {
     srv->context->quic_api->ConfigurationClose(srv->configuration);
   }
 
-  if (srv->cert_file) {
-    if (srv->cert_file->CertificateFile) {
-      free((void *)srv->cert_file->CertificateFile);
-    }
-    if (srv->cert_file->PrivateKeyFile) {
-      free((void *)srv->cert_file->PrivateKeyFile);
-    }
-    free(srv->cert_file);
-    srv->cert_file = NULL;
-  }
+  // Clean up credential config stored on server
+  wtf_cleanup_server_cred_config(srv);
 
   mtx_destroy(&srv->connections_mutex);
   mtx_destroy(&srv->mutex);
@@ -4519,7 +4869,7 @@ wtf_result_t wtf_session_close(wtf_session_t *session, uint32_t error_code,
   if (sess->close_reason) {
     free(sess->close_reason);
   }
-  sess->close_reason = reason ? strndup(reason, 1024) : NULL;
+  sess->close_reason = reason ? wtf_strndup(reason, 1024) : NULL;
 
   uint8_t close_data[1028];
   uint32_t close_len = 4;
@@ -4813,6 +5163,7 @@ wtf_result_t wtf_session_create_stream(wtf_session_t *session,
   }
 
   wtf_connection *conn = sess->connection;
+
 
   uint32_t stream_open_flags = QUIC_STREAM_OPEN_FLAG_NONE;
   if (type == WTF_STREAM_UNIDIRECTIONAL) {
