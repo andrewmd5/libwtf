@@ -172,3 +172,4 @@ scan-build/
 # Package config
 *.pc
 .cache
+/tools/certs

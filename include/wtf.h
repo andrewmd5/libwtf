@@ -283,13 +283,67 @@ typedef void (*wtf_log_callback_t)(wtf_log_level_t level, const char *component,
 
 // #region Configuration Structures
 
+typedef enum {
+  WTF_CERT_TYPE_NONE,                    //! No certificate (client only)
+  WTF_CERT_TYPE_FILE,                    //! Certificate pair loaded from disk (PEM/CER)
+  WTF_CERT_TYPE_FILE_PROTECTED,          //! Protected certificate with password
+  WTF_CERT_TYPE_HASH,                    //! Certificate specified by hash (Windows/Schannel)
+  WTF_CERT_TYPE_HASH_STORE,              //! Certificate from specific store by hash
+  WTF_CERT_TYPE_CONTEXT,                 //! Windows CAPI certificate context
+  WTF_CERT_TYPE_PKCS12,                  //! PKCS#12/PFX certificate with optional password
+} wtf_certificate_type_t;
+
+typedef struct {
+    wtf_certificate_type_t cert_type;      //! Type of certificate configuration
+    
+    // Union for different certificate data types
+    union {
+        // File-based certificates
+        struct {
+            const char *cert_path;         //! Path to certificate file
+            const char *key_path;          //! Path to private key file
+        } file;
+        
+        // Protected file-based certificates
+        struct {
+            const char *cert_path;         //! Path to certificate file
+            const char *key_path;          //! Path to private key file
+            const char *password;          //! Password for private key
+        } protected_file;
+        
+        // Hash-based certificates (Windows/Schannel)
+        struct {
+            const char *thumbprint;        //! Hex string of certificate thumbprint
+        } hash;
+        
+        // Store-based certificates (Windows/Schannel)
+        struct {
+            const char *thumbprint;        //! Hex string of certificate thumbprint
+            const char *store_name;        //! Name of certificate store
+        } hash_store;
+        
+        // PKCS#12/PFX certificates
+        struct {
+            const void *data;              //! PKCS#12 binary data
+            size_t data_size;              //! Size of PKCS#12 data
+            const char *password;          //! Optional password for PKCS#12
+        } pkcs12;
+        
+        // Windows certificate context (opaque pointer)
+        void *context;                     //! Platform-specific certificate context
+    } cert_data;
+    
+    const char *principal;                 //! Principal name for certificate selection
+    const char *ca_cert_file;              //! Optional CA certificate file path
+} wtf_certificate_config_t;
+
+
 //! Server configuration parameters
 typedef struct {
     const char *host;      //! Host address to bind to
     uint16_t port;         //! Port number to listen on
-    const char *cert_file; //! Path to certificate file
-    const char *key_file;  //! Path to private key file
-    const char *cert_hash; //! Certificate hash for validation
+
+    wtf_certificate_config_t *cert_config; //! TLS certificate configuration
 
     // Session limits
     uint32_t max_sessions_per_connection; //! Maximum sessions per connection

@@ -27,12 +27,10 @@
   } while (0)
 #endif
 
-// Server state
 static volatile bool g_running = true;
 static wtf_server_t *g_server = NULL;
 static wtf_context_t *g_context = NULL;
 
-// Statistics tracking
 typedef struct {
   uint64_t sessions_created;
   uint64_t sessions_destroyed;
@@ -47,7 +45,6 @@ typedef struct {
 
 static server_stats_t g_stats = {0};
 
-// Session context to track per-session data
 typedef struct session_context {
   wtf_session_t *session;
   uint32_t session_id;
@@ -57,7 +54,6 @@ typedef struct session_context {
   uint64_t bytes_received;
 } session_context_t;
 
-// Stream context to track per-stream data
 typedef struct stream_context {
   wtf_stream_t *stream;
   uint32_t stream_id;
@@ -66,7 +62,6 @@ typedef struct stream_context {
   bool is_server_initiated;
 } stream_context_t;
 
-// Command processing
 typedef enum {
   CMD_UNKNOWN,
   CMD_REQUEST_STREAM,
@@ -92,10 +87,8 @@ void signal_handler(int sig) {
   printf("\n[SIGNAL] Shutting down server...\n");
 }
 
-// Cross-platform high-resolution timestamp function
 uint64_t get_timestamp_ms() {
 #ifdef _WIN32
-  // Windows: Use QueryPerformanceCounter for high-resolution timing
   static LARGE_INTEGER frequency = {0};
   static bool initialized = false;
   
@@ -107,15 +100,12 @@ uint64_t get_timestamp_ms() {
   LARGE_INTEGER counter;
   QueryPerformanceCounter(&counter);
   
-  // Convert to milliseconds
   return (uint64_t)((counter.QuadPart * 1000) / frequency.QuadPart);
 #else
-  // Unix/Linux: Use clock_gettime with CLOCK_MONOTONIC
   struct timespec ts;
   if (clock_gettime(CLOCK_MONOTONIC, &ts) == 0) {
     return (uint64_t)(ts.tv_sec * 1000 + ts.tv_nsec / 1000000);
   } else {
-    // Fallback to standard time if clock_gettime fails
     struct timeval tv;
     gettimeofday(&tv, NULL);
     return (uint64_t)(tv.tv_sec * 1000 + tv.tv_usec / 1000);
@@ -139,12 +129,10 @@ void print_stats() {
   printf("\n");
 }
 
-// Command parsing
 command_t parse_command(const char *message, size_t length) {
   command_t cmd = {0};
   cmd.type = CMD_UNKNOWN;
 
-  // Create a null-terminated copy for parsing
   char *msg_copy = malloc(length + 1);
   if (!msg_copy)
     return cmd;
@@ -152,21 +140,20 @@ command_t parse_command(const char *message, size_t length) {
   memcpy(msg_copy, message, length);
   msg_copy[length] = '\0';
 
-  // Check for known command prefixes
   if (strncmp(msg_copy, "REQUEST_STREAM:", 15) == 0) {
     cmd.type = CMD_REQUEST_STREAM;
-    cmd.param1 = strdup(msg_copy + 15); // Stream type
+    cmd.param1 = strdup(msg_copy + 15);
   } else if (strncmp(msg_copy, "PING_", 5) == 0) {
     cmd.type = CMD_PING;
-    cmd.param1 = strdup(msg_copy + 5); // Timestamp or data
+    cmd.param1 = strdup(msg_copy + 5);
   } else if (strncmp(msg_copy, "STATS", 5) == 0) {
     cmd.type = CMD_STATS;
   } else if (strncmp(msg_copy, "CREATE_SERVER_STREAM:", 21) == 0) {
     cmd.type = CMD_CREATE_SERVER_STREAM;
-    cmd.param1 = strdup(msg_copy + 21); // Stream type
+    cmd.param1 = strdup(msg_copy + 21);
   } else if (strncmp(msg_copy, "BULK:", 5) == 0) {
     cmd.type = CMD_BULK_DATA;
-    cmd.param1 = strdup(msg_copy + 5); // Size or identifier
+    cmd.param1 = strdup(msg_copy + 5);
   } else if (strncmp(msg_copy, "CLOSE_SESSION", 13) == 0) {
     cmd.type = CMD_CLOSE_SESSION;
   } else {
@@ -192,7 +179,6 @@ void free_command(command_t *cmd) {
   memset(cmd, 0, sizeof(command_t));
 }
 
-// Command handlers
 wtf_result_t handle_request_stream(wtf_session_t *session,
                                    const char *stream_type) {
   printf("[CMD] Creating server-initiated stream: %s\n", stream_type);
@@ -207,10 +193,7 @@ wtf_result_t handle_request_stream(wtf_session_t *session,
 
   if (result == WTF_SUCCESS) {
     g_stats.server_streams_created++;
-    // Note: Don't increment g_stats.streams_created here - it will be done in
-    // session_callback
 
-    // Send initial message on the stream
     char welcome_msg[256];
     int msg_len = snprintf(welcome_msg, sizeof(welcome_msg),
              "SERVER_STREAM_CREATED:type=%s,timestamp=%" PRIu64, stream_type,
@@ -285,7 +268,6 @@ wtf_result_t handle_stats_request(wtf_session_t *session) {
 }
 
 wtf_result_t handle_bulk_data(wtf_session_t *session, const char *bulk_info) {
-  // For bulk data, we'll create a response indicating we received it
   char bulk_response[256];
   int msg_len = snprintf(bulk_response, sizeof(bulk_response),
            "BULK_RECEIVED:info=%s,timestamp=%" PRIu64, bulk_info,
@@ -312,7 +294,6 @@ wtf_result_t handle_close_session(wtf_session_t *session) {
   return wtf_session_close(session, 0, "Client requested closure");
 }
 
-// Callback implementations
 wtf_connection_decision_t
 connection_validator(const wtf_connection_request_t *request, void *user_data) {
   (void)user_data;
@@ -321,7 +302,6 @@ connection_validator(const wtf_connection_request_t *request, void *user_data) {
          request->authority ? request->authority : "unknown",
          request->path ? request->path : "/");
 
-  // Log headers for debugging
   for (size_t i = 0; i < request->header_count; i++) {
     printf("[CONN] Header: %s = %s\n", request->headers[i].name,
            request->headers[i].value);
@@ -341,13 +321,11 @@ void stream_callback(const wtf_stream_event_t *event) {
     const size_t buffer_count = event->data_received.buffer_count;
     const wtf_buffer_t *data = event->data_received.buffers;
 
-    // Calculate total length
     size_t total_length = 0;
     for (int i = 0; i < buffer_count; i++) {
       total_length += data[i].length;
     }
 
-    // Concatenate all buffers
     char *text = malloc(total_length + 1);
     if (!text)
       break;
@@ -362,7 +340,6 @@ void stream_callback(const wtf_stream_event_t *event) {
     g_stats.bytes_received += total_length;
     printf("[STREAM] Received: %.*s\n", (int)total_length, text);
 
-    // Parse and handle commands
     command_t cmd = parse_command(text, total_length);
 
     switch (cmd.type) {
@@ -388,7 +365,6 @@ void stream_callback(const wtf_stream_event_t *event) {
       break;
     case CMD_ECHO:
     default: {
-      // Echo the data back
       wtf_buffer_t response_buffers[1];
       response_buffers[0].data = (uint8_t *)text;
       response_buffers[0].length = total_length;
@@ -420,14 +396,12 @@ void stream_callback(const wtf_stream_event_t *event) {
     printf("[STREAM] Stream %u fully closed\n",
            stream_ctx ? stream_ctx->stream_id : 0);
     g_stats.streams_destroyed++;
-    // Don't free stream_ctx - the library manages this
     break;
 
   case WTF_STREAM_EVENT_ABORTED:
     printf("[STREAM] Stream %u aborted with error %u\n",
            stream_ctx ? stream_ctx->stream_id : 0, event->aborted.error_code);
     g_stats.streams_destroyed++;
-    // Don't free stream_ctx - the library manages this
     break;
 
   default:
@@ -442,7 +416,6 @@ void session_callback(const wtf_session_event_t *event) {
   case WTF_SESSION_EVENT_CONNECTED: {
     printf("[SESSION] New session connected\n");
 
-    // Create session context
     session_ctx = malloc(sizeof(session_context_t));
     if (session_ctx) {
       session_ctx->session = event->session;
@@ -468,15 +441,12 @@ void session_callback(const wtf_session_event_t *event) {
       session_ctx->stream_count++;
     }
 
-    // Create stream context
     stream_context_t *stream_ctx = malloc(sizeof(stream_context_t));
     if (stream_ctx) {
       stream_ctx->stream = event->stream_opened.stream;
       stream_ctx->stream_id = (uint32_t)g_stats.streams_created;
       stream_ctx->session = event->session;
       stream_ctx->created_time = time(NULL);
-      // Check if this is likely a server-initiated stream by checking if we
-      // have recent server stream creation
       stream_ctx->is_server_initiated =
           (g_stats.server_streams_created > 0 &&
            g_stats.streams_created <= g_stats.server_streams_created);
@@ -500,7 +470,6 @@ void session_callback(const wtf_session_event_t *event) {
            event->disconnected.reason ? event->disconnected.reason : "none");
 
     g_stats.sessions_destroyed++;
-    // Don't free session_ctx - the library manages this
     break;
   }
 
@@ -512,7 +481,6 @@ void session_callback(const wtf_session_event_t *event) {
     g_stats.datagrams_received++;
     g_stats.bytes_received += event->datagram_received.data.length;
 
-    // Process datagram as command
     char *text = malloc(event->datagram_received.data.length + 1);
     if (text) {
       memcpy(text, event->datagram_received.data.data,
@@ -560,13 +528,11 @@ void session_callback(const wtf_session_event_t *event) {
 
       case CMD_ECHO:
       default: {
-        // Echo datagram back (reverse the text for demonstration)
         char *reversed = malloc(event->datagram_received.data.length + 1);
         if (reversed) {
           size_t len = event->datagram_received.data.length;
           memcpy(reversed, event->datagram_received.data.data, len);
 
-          // Reverse the string
           for (size_t i = 0; i < len / 2; i++) {
             char temp = reversed[i];
             reversed[i] = reversed[len - i - 1];
@@ -644,13 +610,14 @@ int main(int argc, char *argv[]) {
   printf("Version: %s\n", wtf_get_version()->version);
   printf("===============================================\n\n");
 
-  // Default settings
   uint16_t port = 4433;
   const char *cert_file = "server.crt";
   const char *key_file = "server.key";
+  const char *cert_thumbprint = NULL;
+  const char *cert_store = "My";
+  wtf_certificate_type_t cert_type = WTF_CERT_TYPE_FILE;
   bool verbose = false;
 
-  // Parse command line arguments
   for (int i = 1; i < argc; i++) {
     if (strcmp(argv[i], "--port") == 0 && i + 1 < argc) {
       port = (uint16_t)atoi(argv[++i]);
@@ -658,42 +625,55 @@ int main(int argc, char *argv[]) {
       cert_file = argv[++i];
     } else if (strcmp(argv[i], "--key") == 0 && i + 1 < argc) {
       key_file = argv[++i];
+    } else if (strcmp(argv[i], "--thumbprint") == 0 && i + 1 < argc) {
+      cert_thumbprint = argv[++i];
+      cert_type = WTF_CERT_TYPE_HASH;
+    } else if (strcmp(argv[i], "--store") == 0 && i + 1 < argc) {
+      cert_store = argv[++i];
+      if (cert_type == WTF_CERT_TYPE_HASH) {
+        cert_type = WTF_CERT_TYPE_HASH_STORE;
+      }
     } else if (strcmp(argv[i], "--verbose") == 0) {
       verbose = true;
     } else if (strcmp(argv[i], "--help") == 0) {
       printf("Usage: %s [options]\n", argv[0]);
       printf("Options:\n");
-      printf("  --port <port>     Listen port (default: 4433)\n");
-      printf("  --cert <file>     Certificate file (default: server.crt)\n");
-      printf("  --key <file>      Private key file (default: server.key)\n");
-      printf("  --verbose         Enable verbose logging\n");
-      printf("  --help            Show this help\n");
+      printf("  --port <port>           Listen port (default: 4433)\n");
+      printf("  --cert <file>           Certificate file (default: server.crt)\n");
+      printf("  --key <file>            Private key file (default: server.key)\n");
+      printf("  --thumbprint <hash>     Certificate thumbprint (Windows/Schannel)\n");
+      printf("  --store <name>          Certificate store name (default: My)\n");
+      printf("  --verbose               Enable verbose logging\n");
+      printf("  --help                  Show this help\n");
       printf("\nSupported Commands:\n");
       printf("  REQUEST_STREAM:<type>     - Request server to create stream\n");
       printf("  PING_<data>               - Ping with custom data\n");
       printf("  STATS                     - Get server statistics\n");
-      printf(
-          "  CREATE_SERVER_STREAM:<type> - Create server-initiated stream\n");
+      printf("  CREATE_SERVER_STREAM:<type> - Create server-initiated stream\n");
       printf("  BULK:<info>               - Send bulk data\n");
       printf("  CLOSE_SESSION             - Close the session\n");
-      printf("  <any other data>          - Echo back (streams) or reverse "
-             "(datagrams)\n");
+      printf("  <any other data>          - Echo back (streams) or reverse (datagrams)\n");
       return 0;
     }
   }
 
-  // Set up signal handlers
   signal(SIGINT, signal_handler);
   signal(SIGTERM, signal_handler);
 
   printf("[CONFIG] Server Configuration:\n");
   printf("  Port: %u\n", port);
-  printf("  Certificate: %s\n", cert_file);
-  printf("  Private key: %s\n", key_file);
+  if (cert_type == WTF_CERT_TYPE_FILE) {
+    printf("  Certificate: %s\n", cert_file);
+    printf("  Private key: %s\n", key_file);
+  } else if (cert_type == WTF_CERT_TYPE_HASH) {
+    printf("  Certificate thumbprint: %s\n", cert_thumbprint);
+  } else if (cert_type == WTF_CERT_TYPE_HASH_STORE) {
+    printf("  Certificate thumbprint: %s\n", cert_thumbprint);
+    printf("  Certificate store: %s\n", cert_store);
+  }
   printf("  Verbose logging: %s\n", verbose ? "enabled" : "disabled");
   printf("\n");
 
-  // Create context
   wtf_context_config_t context_config = {0};
   context_config.log_level = verbose ? WTF_LOG_DEBUG : WTF_LOG_INFO;
   context_config.log_callback = log_callback;
@@ -707,17 +687,36 @@ int main(int argc, char *argv[]) {
     return 1;
   }
 
-  // Create server
+  wtf_certificate_config_t cert_config = {0};
+  cert_config.cert_type = cert_type;
+
+  switch (cert_type) {
+    case WTF_CERT_TYPE_FILE:
+      cert_config.cert_data.file.cert_path = cert_file;
+      cert_config.cert_data.file.key_path = key_file;
+      break;
+    case WTF_CERT_TYPE_HASH:
+      cert_config.cert_data.hash.thumbprint = cert_thumbprint;
+      break;
+    case WTF_CERT_TYPE_HASH_STORE:
+      cert_config.cert_data.hash_store.thumbprint = cert_thumbprint;
+      cert_config.cert_data.hash_store.store_name = cert_store;
+      break;
+    default:
+      printf("[ERROR] Unsupported certificate type\n");
+      wtf_context_destroy(g_context);
+      return 1;
+  }
+
   wtf_server_config_t config = {0};
   config.port = port;
-  config.cert_file = cert_file;
-  config.key_file = key_file;
+  config.cert_config = &cert_config;
   config.session_callback = session_callback;
   config.connection_validator = connection_validator;
   config.max_sessions_per_connection = 32;
   config.max_streams_per_session = 256;
-  config.idle_timeout_ms = 60000;      // 60 seconds
-  config.handshake_timeout_ms = 10000; // 10 seconds
+  config.idle_timeout_ms = 60000;
+  config.handshake_timeout_ms = 10000;
   config.enable_0rtt = true;
   config.enable_migration = true;
 
@@ -729,7 +728,6 @@ int main(int argc, char *argv[]) {
     return 1;
   }
 
-  // Start server
   status = wtf_server_start(g_server);
   if (status != WTF_SUCCESS) {
     printf("[ERROR] Failed to start server: %s\n",
@@ -743,15 +741,12 @@ int main(int argc, char *argv[]) {
   printf("[SERVER] Ready to accept connections...\n");
   printf("[SERVER] Press Ctrl+C to stop\n\n");
 
-  // Print initial stats
   print_stats();
 
-  // Main server loop
   time_t last_stats_print = time(NULL);
   while (g_running) {
     sleep_ms(1000);
 
-    // Print stats every 30 seconds if there's activity
     time_t now = time(NULL);
     if (now - last_stats_print >= 30 &&
         (g_stats.sessions_created > 0 || g_stats.datagrams_received > 0)) {
@@ -760,7 +755,6 @@ int main(int argc, char *argv[]) {
     }
   }
 
-  // Cleanup
   printf("\n[SHUTDOWN] Stopping server...\n");
   print_stats();
 
