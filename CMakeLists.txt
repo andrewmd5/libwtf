@@ -1,4 +1,8 @@
-cmake_minimum_required(VERSION 3.16)
+if ("${CMAKE_HOST_SYSTEM_NAME}" STREQUAL "Windows")
+    cmake_minimum_required(VERSION 3.20)
+else()
+    cmake_minimum_required(VERSION 3.16)
+endif()
 
 include(cmake/GetGitVersion.cmake)
 get_git_version(GIT_VERSION WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
@@ -136,6 +140,11 @@ else()
     endif()
     
     add_compile_definitions(QUIC_API_ENABLE_PREVIEW_FEATURES=1)
+
+    # Workaround for Apple Clang invalid-unevaluated-string warning in MsQuic (Clang 17)
+    if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+        add_compile_options(-Wno-invalid-unevaluated-string)
+    endif()
     
     add_subdirectory(msquic)
     

@@ -26,6 +26,7 @@
 #include <netinet/in.h>
 #include <sys/socket.h>
 #include <unistd.h>
+#include <ctype.h>
 #endif
 
 #include "wtf_version.h"   
