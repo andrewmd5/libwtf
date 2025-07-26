@@ -4,6 +4,7 @@ set -euo pipefail
 DEFAULT_HOST="localhost"
 DEFAULT_OUTPUT_DIR="./certs"
 DEFAULT_DAYS=14
+DEFAULT_PFX_PASSWORD=""
 
 print_header() {
     echo "=================================================="
@@ -31,12 +32,14 @@ OPTIONS:
     -h, --host HOSTNAME     Certificate hostname (default: $DEFAULT_HOST)
     -o, --output DIR        Output directory (default: $DEFAULT_OUTPUT_DIR)
     -d, --days DAYS         Validity period in days, max 14 (default: $DEFAULT_DAYS)
+    -p, --pfx-password PWD  Password for PFX file (default: no password)
     --help                  Show this help message
 
 EXAMPLES:
     $0                                          
     $0 -h example.com -o /tmp/certs            
     $0 --host 192.168.1.100 --days 7          
+    $0 -h localhost -p mypassword              
 
 EOF
 }
@@ -53,9 +56,11 @@ generate_certificate() {
     local host=$1
     local output_dir=$2
     local days=$3
+    local pfx_password=$4
     
     local crt="$output_dir/$host.crt"
     local key="$output_dir/$host.key"
+    local pfx="$output_dir/$host.pfx"
     local fingerprint_hex="$output_dir/fingerprint.hex"
     local fingerprint_b64="$output_dir/fingerprint.base64"
     local thumbprint_file="$output_dir/thumbprint.hex"
@@ -116,6 +121,25 @@ EOF
     
     print_item "Certificate" "$crt"
     
+    print_section "Generating PFX File"
+    if [ -n "$pfx_password" ]; then
+        openssl pkcs12 -export \
+            -out "$pfx" \
+            -inkey "$key" \
+            -in "$crt" \
+            -name "$host" \
+            -password "pass:$pfx_password"
+        print_item "PFX file" "$pfx (password protected)"
+    else
+        openssl pkcs12 -export \
+            -out "$pfx" \
+            -inkey "$key" \
+            -in "$crt" \
+            -name "$host" \
+            -passout pass:
+        print_item "PFX file" "$pfx (no password)"
+    fi
+    
     print_section "Generating Fingerprints"
     openssl x509 -in "$crt" -outform der | openssl dgst -sha256 -binary | xxd -p -c 256 > "$fingerprint_hex"
     openssl x509 -in "$crt" -outform der | openssl dgst -sha256 -binary | base64 > "$fingerprint_b64"
@@ -127,7 +151,7 @@ EOF
     
     rm "$output_dir/server.csr" "$output_dir/cert.conf"
     
-    chmod 600 "$key"
+    chmod 600 "$key" "$pfx"
     chmod 644 "$crt"
 }
 
@@ -197,6 +221,35 @@ verify_certificate() {
         print_item "Valid Until" "$not_after"
     else
         print_item "Validity Period" "Unable to read validity dates"
+    fi
+}
+
+verify_pfx() {
+    local pfx=$1
+    local pfx_password=$2
+    
+    print_section "PFX File Verification"
+    
+    if [ ! -f "$pfx" ]; then
+        echo "Error: PFX file not found: $pfx"
+        return 1
+    fi
+    
+    print_item "PFX file size" "$(du -h "$pfx" | cut -f1)"
+    
+    # Test if PFX can be read
+    if [ -n "$pfx_password" ]; then
+        if openssl pkcs12 -in "$pfx" -noout -passin "pass:$pfx_password" 2>/dev/null; then
+            print_item "PFX integrity" "Valid (password protected)"
+        else
+            print_item "PFX integrity" "Error reading PFX file"
+        fi
+    else
+        if openssl pkcs12 -in "$pfx" -noout -passin pass: 2>/dev/null; then
+            print_item "PFX integrity" "Valid (no password)"
+        else
+            print_item "PFX integrity" "Error reading PFX file"
+        fi
     fi
 }
 
@@ -307,14 +360,19 @@ display_usage_examples() {
     local host=$1
     local crt=$2
     local key=$3
+    local pfx=$4
     
     print_section "Usage Examples"
     
-    echo "1. Start WebTransport server:"
+    echo "1. Start WebTransport server with PEM files:"
     echo "   ./wt_echo_server --cert $crt --key $key --port 4433"
     echo ""
     
-    echo "2. WebTransport client with certificate hash:"
+    echo "2. Start server with PFX file (if supported):"
+    echo "   ./wt_echo_server --pfx $pfx --port 4433"
+    echo ""
+    
+    echo "3. WebTransport client with certificate hash:"
     echo "   const transport = new WebTransport('https://$host:4433/', {"
     echo "     serverCertificateHashes: [{"
     echo "       algorithm: 'sha-256',"
@@ -323,16 +381,26 @@ display_usage_examples() {
     echo "   });"
     echo ""
     
+    echo "4. Install PFX in Windows Certificate Store:"
+    echo "   certlm.msc -> Personal -> Certificates -> Import -> $pfx"
+    echo ""
+    
+    echo "5. Use PFX with IIS or .NET applications:"
+    echo "   Load certificate from PFX file using X509Certificate2 class"
+    echo ""
+    
     echo "NOTES:"
     echo "  - Certificate uses ECDSA with secp256r1 as required by WebTransport"
     echo "  - RSA keys are forbidden by WebTransport specification"
     echo "  - Self-signed certificates will show browser warnings"
+    echo "  - PFX format is useful for Windows environments"
     echo "  - For development/testing only"
 }
 
 HOST="$DEFAULT_HOST"
 OUTPUT_DIR="$DEFAULT_OUTPUT_DIR"
 DAYS="$DEFAULT_DAYS"
+PFX_PASSWORD="$DEFAULT_PFX_PASSWORD"
 
 while [[ $# -gt 0 ]]; do
     case $1 in
@@ -347,6 +415,10 @@ while [[ $# -gt 0 ]]; do
         -d|--days)
             DAYS="$2"
             validate_days "$DAYS"
+            shift 2
+            ;;
+        -p|--pfx-password)
+            PFX_PASSWORD="$2"
             shift 2
             ;;
         --help)
@@ -367,18 +439,25 @@ echo "Configuration:"
 print_item "Host" "$HOST"
 print_item "Output Directory" "$OUTPUT_DIR"
 print_item "Validity Days" "$DAYS"
+if [ -n "$PFX_PASSWORD" ]; then
+    print_item "PFX Password" "Set (protected)"
+else
+    print_item "PFX Password" "None (no password)"
+fi
 
-generate_certificate "$HOST" "$OUTPUT_DIR" "$DAYS"
+generate_certificate "$HOST" "$OUTPUT_DIR" "$DAYS" "$PFX_PASSWORD"
 
 crt="$OUTPUT_DIR/$HOST.crt"
 key="$OUTPUT_DIR/$HOST.key"
+pfx="$OUTPUT_DIR/$HOST.pfx"
 fingerprint_hex="$OUTPUT_DIR/fingerprint.hex"
 fingerprint_b64="$OUTPUT_DIR/fingerprint.base64"
 thumbprint_file="$OUTPUT_DIR/thumbprint.hex"
 
 display_certificate_info "$crt"
 verify_certificate "$crt" "$DAYS"
+verify_pfx "$pfx" "$PFX_PASSWORD"
 display_fingerprints "$fingerprint_hex" "$fingerprint_b64" "$thumbprint_file"
-display_usage_examples "$HOST" "$crt" "$key"
+display_usage_examples "$HOST" "$crt" "$key" "$pfx"
 
 print_header "Certificate Generation Complete"
