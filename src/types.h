@@ -323,6 +323,7 @@ typedef struct {
     wtf_buffer_t* buffers;
     uint32_t count;
     void* user_context;
+    QUIC_BUFFER* quic_buffers;
     wtf_session* session;
     bool internal_send;
 } wtf_internal_send_context;
