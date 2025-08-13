@@ -284,6 +284,7 @@ static void wtf_stream_cleanup_send_context(wtf_stream* stream, wtf_internal_sen
             .user_context = stream->user_context,
             .send_complete = {.buffers = send_ctx->buffers,
                               .buffer_count = send_ctx->count,
+                              .user_context = send_ctx->user_context,
                               .cancelled = cancelled}};
         stream->callback(&event);
     } else {
@@ -294,7 +295,6 @@ static void wtf_stream_cleanup_send_context(wtf_stream* stream, wtf_internal_sen
         }
     }
 
-    free(send_ctx->buffers);
     free(send_ctx);
 }
 
@@ -498,7 +498,6 @@ void* wtf_stream_get_context(wtf_stream_t* stream)
     return ((wtf_stream*)stream)->user_context;
 }
 
-
 void wtf_stream_set_callback(wtf_stream_t* stream, wtf_stream_callback_t callback)
 {
     if (!stream) {
@@ -565,21 +564,32 @@ static wtf_result_t wtf_stream_validate_send_params(wtf_stream* stream, const wt
 }
 
 wtf_result_t wtf_stream_send(wtf_stream* stream, const wtf_buffer_t* buffers, uint32_t buffer_count,
-                             bool fin)
+                             bool fin, void* user_context)
 {
     wtf_result_t validation_result = wtf_stream_validate_send_params(stream, buffers, buffer_count);
     if (validation_result != WTF_SUCCESS) {
         return validation_result;
     }
 
-    wtf_internal_send_context* send_ctx = malloc(sizeof(wtf_internal_send_context));
+    wtf_internal_send_context* send_ctx = malloc(
+        sizeof(wtf_internal_send_context)
+        + (sizeof(wtf_buffer_t) + sizeof(QUIC_BUFFER)) * buffer_count);
     if (!send_ctx) {
         return WTF_ERROR_OUT_OF_MEMORY;
     }
 
-    send_ctx->buffers = (wtf_buffer_t*)buffers;
+    send_ctx->buffers = (wtf_buffer_t*)(send_ctx + 1);  // A copy used to report completion
     send_ctx->count = buffer_count;
+    send_ctx->quic_buffers = (QUIC_BUFFER*)(send_ctx->buffers
+                                            + buffer_count);  // conversion to underlying QUIC
+    send_ctx->user_context = user_context;
     send_ctx->internal_send = false;
+
+    for (uint32_t buffer_index = 0; buffer_index < buffer_count; buffer_index++) {
+        send_ctx->buffers[buffer_index] = buffers[buffer_index];
+        send_ctx->quic_buffers[buffer_index].Length = buffers[buffer_index].length;
+        send_ctx->quic_buffers[buffer_index].Buffer = buffers[buffer_index].data;
+    }
 
     QUIC_SEND_FLAGS flags = QUIC_SEND_FLAG_NONE;
     if (fin) {
@@ -588,7 +598,7 @@ wtf_result_t wtf_stream_send(wtf_stream* stream, const wtf_buffer_t* buffers, ui
 
     wtf_connection* conn = stream->session->connection;
     QUIC_STATUS status = conn->server->context->quic_api->StreamSend(
-        stream->quic_stream, (QUIC_BUFFER*)buffers, buffer_count, flags, send_ctx);
+        stream->quic_stream, send_ctx->quic_buffers, buffer_count, flags, send_ctx);
 
     if (QUIC_SUCCEEDED(status)) {
         stream->state = WTF_INTERNAL_STREAM_STATE_OPEN;
@@ -656,7 +666,7 @@ wtf_result_t wtf_stream_close(wtf_stream_t* stream)
     mtx_unlock(&strm->mutex);
 
     wtf_buffer_t empty_buffer = {0, NULL};
-    return wtf_stream_send(strm, &empty_buffer, 1, true);
+    return wtf_stream_send(strm, &empty_buffer, 1, true, NULL);
 }
 
 wtf_result_t wtf_stream_get_id(wtf_stream_t* stream, uint64_t* stream_id)
