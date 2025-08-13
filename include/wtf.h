@@ -260,7 +260,7 @@ typedef struct {
 typedef struct {
     wtf_stream_event_type_t type;  //! Type of stream event
     wtf_stream_t* stream;          //! Stream that generated the event
-    void* user_context;            //! User-provided context data
+    void* user_context;            //! User-provided context data (wtf_stream_set_context)
 
     union {
         struct {
@@ -272,6 +272,7 @@ typedef struct {
         struct {
             wtf_buffer_t* buffers;  //! Array of sent data buffers
             uint32_t buffer_count;  //! Number of buffers sent
+            void* user_context;     //! User-provided context data (wtf_stream_send)
             bool cancelled;         //! True if send was cancelled
         } send_complete;
 
@@ -556,6 +557,7 @@ WTF_API void* wtf_session_get_context(wtf_session_t* session);
 //! @param buffers array of data buffers to send
 //! @param buffer_count number of buffers in array
 //! @param fin true if this is the final data
+//! @param user_context an opaque context to be passed back to the caller on completion
 //! @return WTF_SUCCESS on success, error code on failure
 //!
 //! @note Memory ownership:
@@ -575,7 +577,7 @@ WTF_API void* wtf_session_get_context(wtf_session_t* session);
 //! @note The function passes the original buffers directly to the QUIC layer without
 //! modification or copying. No protocol headers are added for stream data.
 WTF_API wtf_result_t wtf_stream_send(wtf_stream_t* stream, const wtf_buffer_t* buffers,
-                                     uint32_t buffer_count, bool fin);
+                                     uint32_t buffer_count, bool fin, void* user_context);
 
 //! Close a stream gracefully (send FIN)
 //! @param stream stream to close

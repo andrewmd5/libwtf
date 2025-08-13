@@ -284,6 +284,7 @@ static void wtf_stream_cleanup_send_context(wtf_stream* stream, wtf_internal_sen
             .user_context = stream->user_context,
             .send_complete = {.buffers = send_ctx->buffers,
                               .buffer_count = send_ctx->count,
+                              .user_context = send_ctx->user_context,
                               .cancelled = cancelled}};
         stream->callback(&event);
     } else {
@@ -565,7 +566,7 @@ static wtf_result_t wtf_stream_validate_send_params(wtf_stream* stream, const wt
 }
 
 wtf_result_t wtf_stream_send(wtf_stream* stream, const wtf_buffer_t* buffers, uint32_t buffer_count,
-                             bool fin)
+                             bool fin, void* user_context)
 {
     wtf_result_t validation_result = wtf_stream_validate_send_params(stream, buffers, buffer_count);
     if (validation_result != WTF_SUCCESS) {
@@ -576,9 +577,16 @@ wtf_result_t wtf_stream_send(wtf_stream* stream, const wtf_buffer_t* buffers, ui
     if (!send_ctx) {
         return WTF_ERROR_OUT_OF_MEMORY;
     }
+    wtf_buffer_t* internal_buffers = malloc(sizeof *buffers * buffer_count);
+    if (!internal_buffers) {
+        free(send_ctx);
+        return WTF_ERROR_OUT_OF_MEMORY;
+    }
+    memcpy(internal_buffers, buffers, sizeof *buffers * buffer_count);
 
-    send_ctx->buffers = (wtf_buffer_t*)buffers;
+    send_ctx->buffers = internal_buffers;
     send_ctx->count = buffer_count;
+    send_ctx->user_context = user_context;
     send_ctx->internal_send = false;
 
     QUIC_SEND_FLAGS flags = QUIC_SEND_FLAG_NONE;
@@ -586,9 +594,13 @@ wtf_result_t wtf_stream_send(wtf_stream* stream, const wtf_buffer_t* buffers, ui
         flags |= QUIC_SEND_FLAG_FIN;
     }
 
+    // WARN: QUIC_BUFFER cast below is not quite safe, this should be really done differently, 
+    //       either QUIC_BUFFER is to use used directly or there should be a static assert
+    //       of some way to ensure the match. So far this runs on affinity assumption.
+
     wtf_connection* conn = stream->session->connection;
     QUIC_STATUS status = conn->server->context->quic_api->StreamSend(
-        stream->quic_stream, (QUIC_BUFFER*)buffers, buffer_count, flags, send_ctx);
+        stream->quic_stream, (QUIC_BUFFER*)internal_buffers, buffer_count, flags, send_ctx);
 
     if (QUIC_SUCCEEDED(status)) {
         stream->state = WTF_INTERNAL_STREAM_STATE_OPEN;
@@ -598,6 +610,7 @@ wtf_result_t wtf_stream_send(wtf_stream* stream, const wtf_buffer_t* buffers, ui
         return WTF_SUCCESS;
     }
 
+    free(send_ctx->buffers);
     free(send_ctx);
     return wtf_quic_status_to_result(status);
 }
@@ -656,7 +669,7 @@ wtf_result_t wtf_stream_close(wtf_stream_t* stream)
     mtx_unlock(&strm->mutex);
 
     wtf_buffer_t empty_buffer = {0, NULL};
-    return wtf_stream_send(strm, &empty_buffer, 1, true);
+    return wtf_stream_send(strm, &empty_buffer, 1, true, NULL);
 }
 
 wtf_result_t wtf_stream_get_id(wtf_stream_t* stream, uint64_t* stream_id)
