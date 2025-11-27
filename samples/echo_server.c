@@ -657,7 +657,7 @@ void session_callback(const wtf_session_event_t* event)
 }
 
 void log_callback(wtf_log_level_t level, const char* component, const char* file, int line,
-                  const char* message)
+                  const char* message, void* user_context)
 {
     const char* level_str = "";
 
