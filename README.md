@@ -29,7 +29,7 @@ The implementation provides comprehensive error handling with detailed diagnosti
 
 ```bash
 # Build from source
-git clone https://github.com/andrewmd5/libwtf.git
+git clone --recurse-submodules https://github.com/andrewmd5/libwtf.git
 cd libwtf
 # macOS / Linux
  cmake -DWTF_BUILD_SAMPLES=on -S . -B build -G "Ninja Multi-Config"
