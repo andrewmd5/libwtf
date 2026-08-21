@@ -55,7 +55,7 @@ wtf_result_t wtf_cert_load_der_from_file(const char* path, uint8_t** der, size_t
     HCRYPTMSG crypt_msg = NULL;
     const void* cert_context_raw = NULL;
 
-    if (!CryptQueryObjectA(CERT_QUERY_OBJECT_FILE, path, CERT_QUERY_CONTENT_FLAG_CERT,
+    if (!CryptQueryObject(CERT_QUERY_OBJECT_FILE, path, CERT_QUERY_CONTENT_FLAG_CERT,
                            CERT_QUERY_FORMAT_FLAG_ALL, 0, &encoding, &content_type,
                            &format_type, &cert_store, &crypt_msg, &cert_context_raw)) {
         return WTF_ERROR_INVALID_PARAMETER;

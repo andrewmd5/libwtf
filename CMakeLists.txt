@@ -88,6 +88,8 @@ if(WIN32)
         add_compile_options(/Qspectre)
     endif()
     add_compile_options(/W3)
+    add_compile_options(/std:c11 /experimental:c11atomics) # fix "C atomic support is not enabled"
+    add_compile_options(/wd28020)                          # see https://github.com/microsoft/msquic/issues/6234
     
     add_compile_options(
         $<$<CONFIG:Debug>:/Od>
