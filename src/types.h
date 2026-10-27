@@ -336,6 +336,8 @@ typedef struct wtf_http3_stream {
     uint64_t capsule_length;
     uint64_t capsule_bytes_read;
     bool capsule_header_complete;
+    uint8_t capsule_header[2 * sizeof(uint64_t)];
+    size_t capsule_header_length;
     uint8_t* capsule_buffer;
     uint8_t capsule_inline[WTF_INLINE_CAPSULE_STORAGE];
 } wtf_http3_stream;

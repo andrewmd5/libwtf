@@ -1093,11 +1093,23 @@ static wtf_capsule_parse_result_t wtf_http3_parse_capsule(wtf_http3_stream* stre
     *consumed = 0;
 
     if (!stream->capsule_header_complete) {
-        if (!wtf_varint_decode(length, data, &offset, &stream->capsule_type)) {
-            return WTF_CAPSULE_PARSE_NEED_MORE_DATA;
+        bool complete = false;
+        while (offset < length && stream->capsule_header_length < sizeof(stream->capsule_header)) {
+            stream->capsule_header[stream->capsule_header_length++] = data[offset++];
+            size_t header_offset = 0;
+            if (wtf_varint_decode(stream->capsule_header_length, stream->capsule_header,
+                                  &header_offset, &stream->capsule_type)
+                && wtf_varint_decode(stream->capsule_header_length, stream->capsule_header,
+                                     &header_offset, &stream->capsule_length)) {
+                complete = true;
+                break;
+            }
         }
-
-        if (!wtf_varint_decode(length, data, &offset, &stream->capsule_length)) {
+        *consumed = offset;
+        if (!complete) {
+            if (stream->capsule_header_length == sizeof(stream->capsule_header)) {
+                return WTF_CAPSULE_PARSE_ERROR;
+            }
             return WTF_CAPSULE_PARSE_NEED_MORE_DATA;
         }
 
@@ -1144,6 +1156,7 @@ static wtf_capsule_parse_result_t wtf_http3_parse_capsule(wtf_http3_stream* stre
         capsule->data = stream->capsule_buffer;
 
         stream->capsule_header_complete = false;
+        stream->capsule_header_length = 0;
         stream->capsule_length = 0;
         stream->capsule_bytes_read = 0;
         stream->capsule_buffer = NULL;
@@ -1154,50 +1167,35 @@ static wtf_capsule_parse_result_t wtf_http3_parse_capsule(wtf_http3_stream* stre
     return WTF_CAPSULE_PARSE_NEED_MORE_DATA;
 }
 
-static bool wtf_http3_process_webtransport_capsules(wtf_http3_stream* stream, const uint8_t* data,
-                                                    size_t length, size_t* processed_bytes)
+static wtf_frame_result_t wtf_http3_process_webtransport_capsules(
+    wtf_http3_stream* stream, const uint8_t* data, size_t length)
 {
-    // Only process capsules on WebTransport streams, never on control/QPACK streams
-    if (!stream->webtransport_session || WTF_STREAM_IS_UNIDIRECTIONAL(stream->id)) {
-        return false;
+    if (!stream->webtransport_session
+        || stream->webtransport_session->state != WTF_SESSION_CONNECTED) {
+        return WTF_FRAME_RESULT_SUCCESS;
     }
 
-    if (stream->webtransport_session->state != WTF_SESSION_CONNECTED) {
-        return false;
-    }
-
-    wtf_capsule capsule;
-    size_t consumed = 0;
-    wtf_capsule_parse_result_t parse_result = wtf_http3_parse_capsule(
-        stream, data + *processed_bytes, length - *processed_bytes, &capsule, &consumed);
-    if (parse_result == WTF_CAPSULE_PARSE_COMPLETE) {
-        wtf_session_process_capsule(stream->webtransport_session, &capsule);
-
-        if (capsule.data && capsule.data != stream->capsule_inline) {
-            free(capsule.data);
+    size_t offset = 0;
+    while (offset < length) {
+        wtf_capsule capsule;
+        size_t consumed = 0;
+        wtf_capsule_parse_result_t result = wtf_http3_parse_capsule(
+            stream, data + offset, length - offset, &capsule, &consumed);
+        if (result == WTF_CAPSULE_PARSE_ERROR || consumed == 0) {
+            return WTF_FRAME_RESULT_INVALID_FRAME;
         }
-
-        *processed_bytes += consumed;
-        return true;
-    }
-
-    if (parse_result == WTF_CAPSULE_PARSE_NEED_MORE_DATA) {
-        if (consumed > 0) {
-            *processed_bytes += consumed;
-            return true;
-        }
-
-        size_t remaining = length - *processed_bytes;
-        if (remaining > 0) {
-            if (!wtf_http3_stream_buffer_replace(stream, data + *processed_bytes, remaining)) {
-                return false;
+        offset += consumed;
+        if (result == WTF_CAPSULE_PARSE_COMPLETE) {
+            bool processed = wtf_session_process_capsule(stream->webtransport_session, &capsule);
+            if (capsule.data && capsule.data != stream->capsule_inline) {
+                free(capsule.data);
             }
-            *processed_bytes = length;
-            return true;
+            if (!processed) {
+                return WTF_FRAME_RESULT_PROTOCOL_ERROR;
+            }
         }
     }
-
-    return false;
+    return WTF_FRAME_RESULT_SUCCESS;
 }
 
 static wtf_frame_result_t wtf_http3_process_headers_frame(wtf_http3_stream* stream,
@@ -1280,7 +1278,8 @@ static wtf_frame_result_t wtf_http3_process_single_frame(
                               (unsigned long long)stream->id);
                 return WTF_FRAME_RESULT_PROTOCOL_ERROR;
             }
-            return WTF_FRAME_RESULT_SUCCESS;
+            return wtf_http3_process_webtransport_capsules(stream, frame_data,
+                                                            (size_t)frame->length);
 
         case WTF_FRAME_GOAWAY:
             // GOAWAY frames only valid on control streams
@@ -1309,11 +1308,6 @@ static wtf_frame_result_t wtf_http3_process_frames(
     size_t processed_bytes = offset;
 
     while (processed_bytes < length) {
-        if (wtf_http3_process_webtransport_capsules(stream, data, length, &processed_bytes)) {
-            continue;
-        }
-
-
         if (!WTF_STREAM_IS_UNIDIRECTIONAL(stream->id) && processed_bytes == offset
             && !stream->is_webtransport) {
             wtf_varint_t signal_value;
@@ -2899,6 +2893,9 @@ static QUIC_STATUS wtf_handle_stream_shutdown_events(wtf_http3_stream* stream, H
         Stream, QUIC_PARAM_STREAM_ID, &stream_id_size, &stream_id);
 
     wtf_http3_stream* stream_to_destroy = NULL;
+    if (Event->Type == QUIC_STREAM_EVENT_SHUTDOWN_COMPLETE) {
+        stream_to_destroy = stream;
+    }
     bool release_map_ref = false;
 
     if (QUIC_SUCCEEDED(status)) {

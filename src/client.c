@@ -731,7 +731,7 @@ void wtf_client_destroy(wtf_client_t* client)
     }
 
     if (cli->connection) {
-        wtf_connection_release(cli->connection);
+        wtf_connection_destroy(cli->connection);
         cli->connection = NULL;
     }
 

@@ -166,6 +166,19 @@ static wtf_result_t wtf_stream_send_header(wtf_stream* stream, HQUIC Stream, QUI
         Stream, (QUIC_BUFFER*)send_ctx->inline_buffers, 1, flags, send_ctx);
 
     if (QUIC_SUCCEEDED(status)) {
+#ifdef QUIC_API_ENABLE_PREVIEW_FEATURES
+        if (conn->reliable_reset_negotiated) {
+            const uint64_t reliable_offset = header_length;
+            status = conn->context->quic_api->SetParam(
+                Stream, QUIC_PARAM_STREAM_RELIABLE_OFFSET,
+                sizeof(reliable_offset), &reliable_offset);
+            if (QUIC_FAILED(status)) {
+                WTF_LOG_ERROR(conn->context, "webtransport",
+                              "Failed to protect WebTransport header: 0x%x", status);
+                return wtf_quic_status_to_result(status);
+            }
+        }
+#endif
         WTF_LOG_TRACE(conn->context, "webtransport", "WebTransport stream %llu header sent",
                       (unsigned long long)stream->stream_id);
         return WTF_SUCCESS;

@@ -495,10 +495,19 @@ QUIC_STATUS QUIC_API wtf_connection_callback(HQUIC Connection, void* Context,
 
         case QUIC_CONNECTION_EVENT_SHUTDOWN_INITIATED_BY_TRANSPORT:
         case QUIC_CONNECTION_EVENT_SHUTDOWN_INITIATED_BY_PEER: {
+            const bool transport_shutdown =
+                Event->Type == QUIC_CONNECTION_EVENT_SHUTDOWN_INITIATED_BY_TRANSPORT;
             uint64_t error_code = Event->SHUTDOWN_INITIATED_BY_PEER.ErrorCode;
+            QUIC_STATUS status = QUIC_STATUS_SUCCESS;
+            const char* source = "peer application";
+            if (transport_shutdown) {
+                error_code = Event->SHUTDOWN_INITIATED_BY_TRANSPORT.ErrorCode;
+                status = Event->SHUTDOWN_INITIATED_BY_TRANSPORT.Status;
+                source = "transport";
+            }
             WTF_LOG_INFO(conn->context, "conn",
-                         "Connection shutdown initiated: error=0x%llx",
-                         (unsigned long long)error_code);
+                         "Connection shutdown initiated: source=%s, status=0x%x, error=0x%llx",
+                         source, (unsigned int)status, (unsigned long long)error_code);
 
             conn->state = WTF_CONNECTION_STATE_CLOSING;
 
@@ -556,6 +565,15 @@ QUIC_STATUS QUIC_API wtf_connection_callback(HQUIC Connection, void* Context,
 
             conn->state = WTF_CONNECTION_STATE_CLOSED;
 
+            char reason[512] = {0};
+            uint32_t reason_length = sizeof(reason);
+            if (conn->quic_connection &&
+                QUIC_SUCCEEDED(conn->context->quic_api->GetParam(
+                    conn->quic_connection, QUIC_PARAM_CONN_CLOSE_REASON_PHRASE,
+                    &reason_length, reason))) {
+                reason[sizeof(reason) - 1] = '\0';
+                WTF_LOG_INFO(conn->context, "conn", "Connection shutdown reason: %s", reason);
+            }
             if (conn->quic_connection && !Event->SHUTDOWN_COMPLETE.AppCloseInProgress) {
                 conn->context->quic_api->ConnectionClose(conn->quic_connection);
             }

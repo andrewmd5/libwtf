@@ -443,7 +443,9 @@ wtf_result_t wtf_session_send_capsule(wtf_session* session, uint64_t type, const
 
     size_t type_size = wtf_varint_size(type);
     size_t length_size = wtf_varint_size(length);
-    size_t total_size = type_size + length_size + length;
+    size_t capsule_size = type_size + length_size + length;
+    size_t total_size = wtf_varint_size(WTF_FRAME_DATA) + wtf_varint_size(capsule_size)
+        + capsule_size;
 
     wtf_internal_send_context* send_ctx = NULL;
     uint8_t* capsule_data = NULL;
@@ -456,6 +458,8 @@ wtf_result_t wtf_session_send_capsule(wtf_session* session, uint64_t type, const
     uint8_t* current_pos = capsule_data;
     uint8_t* buffer_end = capsule_data + total_size;
 
+    current_pos = wtf_varint_encode(WTF_FRAME_DATA, current_pos);
+    current_pos = wtf_varint_encode(capsule_size, current_pos);
     current_pos = wtf_varint_encode(type, current_pos);
     if (current_pos > buffer_end) {
         wtf_internal_send_context_destroy(send_ctx);
