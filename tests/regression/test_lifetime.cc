@@ -1,0 +1,377 @@
+#include <gtest/gtest.h>
+
+#include <cstdint>
+#include <vector>
+
+extern "C" {
+#include "conn.h"
+#include "http3.h"
+#include "session.h"
+#include "stream.h"
+#include "utils.h"
+
+void wtf_test_echo_session(wtf_session_t*);
+void wtf_test_echo_stream(wtf_session_t*, wtf_stream_t*);
+wtf_result_t wtf_test_echo_send(wtf_stream_t*, const void*, size_t);
+size_t wtf_test_echo_queued(void);
+void wtf_test_echo_disconnected(const wtf_session_event_t*);
+}
+
+namespace {
+
+struct PendingSend {
+    HQUIC handle;
+    void* context;
+};
+
+std::vector<PendingSend> pending_sends;
+unsigned closed_handles;
+unsigned disconnects;
+bool fail_send;
+wtf_session* retained_session;
+
+QUIC_STATUS QUIC_API GetParam(HQUIC, uint32_t, uint32_t*, void*)
+{
+    // Terminal cleanup must work even if querying a stream ID fails.
+    return QUIC_STATUS_INVALID_STATE;
+}
+
+void QUIC_API StreamClose(HQUIC) { ++closed_handles; }
+
+QUIC_STATUS QUIC_API StreamShutdown(HQUIC, QUIC_STREAM_SHUTDOWN_FLAGS, QUIC_UINT62)
+{
+    return QUIC_STATUS_SUCCESS;
+}
+
+QUIC_STATUS QUIC_API StreamSend(HQUIC handle, const QUIC_BUFFER*, uint32_t,
+                                QUIC_SEND_FLAGS, void* context)
+{
+    if (fail_send) return QUIC_STATUS_OUT_OF_MEMORY;
+    if (context) pending_sends.push_back({handle, context});
+    return QUIC_STATUS_SUCCESS;
+}
+
+void Disconnected(const wtf_session_event_t* event)
+{
+    if (event->type == WTF_SESSION_EVENT_DISCONNECTED) ++disconnects;
+}
+
+void RetainOnDisconnect(const wtf_session_event_t* event)
+{
+    Disconnected(event);
+    retained_session = event->session;
+    wtf_session_ref(retained_session);
+}
+
+class LifetimeRegression : public ::testing::Test {
+protected:
+    QUIC_API_TABLE api = {};
+    wtf_context context = {};
+    wtf_server server = {};
+    wtf_connection* conn = nullptr;
+    std::vector<wtf_http3_stream*> connects;
+    std::vector<wtf_stream*> children;
+    uintptr_t next_handle = 1;
+
+    void SetUp() override
+    {
+        api.GetParam = GetParam;
+        api.StreamClose = StreamClose;
+        api.StreamShutdown = StreamShutdown;
+        api.StreamSend = StreamSend;
+        context.quic_api = &api;
+        server.context = &context;
+        conn = wtf_connection_create(&server, nullptr);
+        ASSERT_NE(nullptr, conn);
+        closed_handles = disconnects = 0;
+        fail_send = false;
+        retained_session = nullptr;
+        pending_sends.clear();
+    }
+
+    HQUIC Handle() { return reinterpret_cast<HQUIC>(next_handle++); }
+
+    wtf_session* Session()
+    {
+        auto* h3 = wtf_http3_stream_create(conn, Handle(), UINT64_MAX);
+        h3->id = next_handle * 4;
+        connects.push_back(h3);
+        auto* session = wtf_session_create(conn, h3);
+        session->state = WTF_SESSION_CONNECTED;
+        session->callback = Disconnected;
+        h3->webtransport_session = session;
+        wtf_session_add_ref(session); // CONNECT's owner, separate from the live map.
+        session_map_insert(&conn->sessions, session->id, session);
+        return session;
+    }
+
+    wtf_stream* EchoStream(wtf_session* session)
+    {
+        auto* stream = wtf_stream_create(session, next_handle * 4, WTF_STREAM_BIDIRECTIONAL);
+        stream->quic_stream = Handle();
+        stream->state = WTF_INTERNAL_STREAM_STATE_OPEN;
+        children.push_back(stream);
+        wtf_test_echo_stream(session, stream);
+        return stream;
+    }
+
+    void CompleteSends(bool cancelled = false)
+    {
+        auto sends = std::move(pending_sends);
+        pending_sends.clear();
+        for (auto send : sends) {
+            wtf_stream* owner = nullptr;
+            for (auto* stream : children) {
+                if (stream->quic_stream == send.handle) owner = stream;
+            }
+            if (owner) {
+                QUIC_STREAM_EVENT event = {};
+                event.Type = QUIC_STREAM_EVENT_SEND_COMPLETE;
+                event.SEND_COMPLETE.ClientContext = send.context;
+                event.SEND_COMPLETE.Canceled = cancelled;
+                EXPECT_EQ(QUIC_STATUS_SUCCESS,
+                          wtf_upgraded_stream_callback(send.handle, owner, &event));
+            } else {
+                wtf_internal_send_context_destroy(
+                    static_cast<wtf_internal_send_context*>(send.context));
+            }
+        }
+    }
+
+    void Finish(wtf_http3_stream* stream)
+    {
+        QUIC_STREAM_EVENT event = {};
+        event.Type = QUIC_STREAM_EVENT_SHUTDOWN_COMPLETE;
+        EXPECT_EQ(QUIC_STATUS_SUCCESS,
+                  wtf_http3_stream_callback(stream->quic_stream, stream, &event));
+    }
+
+    void TearDown() override
+    {
+        CompleteSends(true);
+        for (auto* stream : children) {
+            QUIC_STREAM_EVENT event = {};
+            event.Type = QUIC_STREAM_EVENT_SHUTDOWN_COMPLETE;
+            wtf_upgraded_stream_callback(stream->quic_stream, stream, &event);
+        }
+        for (auto* stream : connects) Finish(stream);
+        if (retained_session) wtf_session_unref(retained_session);
+        EXPECT_EQ(0u, wtf_test_echo_queued());
+        EXPECT_EQ(0u, session_map_size(&conn->sessions));
+        EXPECT_EQ(0u, http3_stream_map_size(&conn->streams));
+        EXPECT_EQ(1u, atomic_load(&conn->ref_count));
+        wtf_connection_destroy(conn);
+    }
+};
+
+TEST_F(LifetimeRegression, RepeatedResetBeforeReceiveReleasesConnectionOwner)
+{
+    for (unsigned i = 0; i < 10000; ++i) {
+        auto* stream = wtf_http3_stream_create(conn, Handle(), UINT64_MAX);
+        QUIC_STREAM_EVENT reset = {};
+        reset.Type = QUIC_STREAM_EVENT_PEER_SEND_ABORTED;
+        wtf_http3_stream_callback(stream->quic_stream, stream, &reset);
+        Finish(stream);
+        ASSERT_EQ(1u, atomic_load(&conn->ref_count));
+    }
+    EXPECT_EQ(10000u, closed_handles);
+}
+
+TEST_F(LifetimeRegression, ShutdownRemovesRegisteredStreamWithoutQueryingId)
+{
+    auto* stream = wtf_http3_stream_create(conn, Handle(), UINT64_MAX);
+    stream->id = 4;
+    http3_stream_map_insert(&conn->streams, 4, stream);
+    wtf_http3_stream_add_ref(stream);
+    conn->peer_control_stream = stream;
+    Finish(stream);
+    EXPECT_EQ(nullptr, conn->peer_control_stream);
+    EXPECT_EQ(1u, closed_handles);
+}
+
+TEST_F(LifetimeRegression, FinBeforeReceiveReleasesPlaceholder)
+{
+    auto* stream = wtf_http3_stream_create(conn, Handle(), UINT64_MAX);
+    QUIC_STREAM_EVENT event = {};
+    event.Type = QUIC_STREAM_EVENT_PEER_SEND_SHUTDOWN;
+    wtf_http3_stream_callback(stream->quic_stream, stream, &event);
+    Finish(stream);
+    EXPECT_EQ(1u, closed_handles);
+}
+
+TEST_F(LifetimeRegression, DeferredOwnerCanOutlivePlaceholderShutdown)
+{
+    auto* stream = wtf_http3_stream_create(conn, Handle(), UINT64_MAX);
+    wtf_http3_stream_add_ref(stream);
+    Finish(stream);
+    EXPECT_EQ(2u, atomic_load(&conn->ref_count));
+    EXPECT_TRUE(stream->destroyed);
+    wtf_http3_stream_release(stream);
+}
+
+TEST_F(LifetimeRegression, RepeatedCloseCapsulesDoNotRetainSessions)
+{
+    uint8_t data[] = {0, 0, 0, 1};
+    wtf_capsule close = {};
+    close.type = WTF_CAPSULE_CLOSE_WEBTRANSPORT_SESSION;
+    close.length = sizeof(data);
+    close.data = data;
+    for (unsigned i = 0; i < 10000; ++i) {
+        auto* session = Session();
+        auto* stream = connects.back();
+        connects.pop_back();
+        ASSERT_TRUE(wtf_session_process_capsule(session, &close));
+        ASSERT_EQ(0u, session_map_size(&conn->sessions));
+        Finish(stream);
+        ASSERT_EQ(1u, atomic_load(&conn->ref_count));
+    }
+    EXPECT_EQ(10000u, disconnects);
+}
+
+TEST_F(LifetimeRegression, ConnectFinWithoutCloseCapsuleRetiresSessionOnce)
+{
+    Session();
+    auto* stream = connects.back();
+    QUIC_STREAM_EVENT event = {};
+    event.Type = QUIC_STREAM_EVENT_PEER_SEND_SHUTDOWN;
+    wtf_http3_stream_callback(stream->quic_stream, stream, &event);
+    EXPECT_EQ(0u, session_map_size(&conn->sessions));
+    EXPECT_EQ(1u, disconnects);
+}
+
+TEST_F(LifetimeRegression, ExplicitAppReferenceSurvivesTerminalCallback)
+{
+    auto* session = Session();
+    session->callback = RetainOnDisconnect;
+    wtf_session_shutdown(session, 0, "test");
+    Finish(connects.back());
+    connects.clear();
+    ASSERT_NE(nullptr, retained_session);
+    EXPECT_EQ(WTF_SESSION_CLOSED, retained_session->state);
+    EXPECT_EQ(2u, atomic_load(&conn->ref_count));
+}
+
+TEST_F(LifetimeRegression, LocalCloseRetiresSessionAndNotifiesOnce)
+{
+    auto* session = Session();
+    EXPECT_EQ(WTF_SUCCESS, wtf_session_close(session, 1, "local close"));
+    EXPECT_EQ(0u, session_map_size(&conn->sessions));
+    EXPECT_EQ(1u, disconnects);
+    EXPECT_EQ(WTF_ERROR_INVALID_STATE, wtf_session_close(session, 1, "again"));
+}
+
+TEST_F(LifetimeRegression, FlowControlFailureRetiresSessionOnce)
+{
+    auto* session = Session();
+    wtf_session_fail_flow_control(session);
+    wtf_session_fail_flow_control(session);
+    EXPECT_EQ(0u, session_map_size(&conn->sessions));
+    EXPECT_EQ(1u, disconnects);
+}
+
+TEST_F(LifetimeRegression, ParentShutdownRetiresAllSessionsBeforeStreamCallbacks)
+{
+    Session();
+    Session();
+    QUIC_CONNECTION_EVENT event = {};
+    event.Type = QUIC_CONNECTION_EVENT_SHUTDOWN_INITIATED_BY_PEER;
+    event.SHUTDOWN_INITIATED_BY_PEER.ErrorCode = 1;
+    wtf_connection_callback(nullptr, conn, &event);
+    EXPECT_EQ(0u, session_map_size(&conn->sessions));
+    EXPECT_EQ(2u, disconnects);
+    for (auto* stream : connects) Finish(stream);
+    connects.clear();
+    EXPECT_EQ(2u, disconnects);
+    EXPECT_EQ(1u, atomic_load(&conn->ref_count));
+}
+
+TEST_F(LifetimeRegression, EchoStreamBudgetStaysChargedUntilCompletion)
+{
+    auto* session = Session();
+    wtf_test_echo_session(session);
+    session->callback = wtf_test_echo_disconnected;
+    auto* stream = EchoStream(session);
+    std::vector<uint8_t> payload(1024 * 1024);
+    EXPECT_EQ(WTF_SUCCESS, wtf_test_echo_send(stream, payload.data(), payload.size()));
+    EXPECT_EQ(payload.size(), wtf_test_echo_queued());
+    EXPECT_EQ(WTF_ERROR_FLOW_CONTROL, wtf_test_echo_send(stream, payload.data(), 1));
+    CompleteSends();
+    EXPECT_EQ(0u, wtf_test_echo_queued());
+    EXPECT_EQ(WTF_SUCCESS, wtf_test_echo_send(stream, payload.data(), payload.size()));
+    // A session can disconnect before its remaining sends complete.
+    wtf_session_shutdown(session, 0, "test");
+    CompleteSends(true);
+}
+
+TEST_F(LifetimeRegression, EchoSessionAndProcessBudgetsBoundManyStreams)
+{
+    std::vector<uint8_t> payload(1024 * 1024);
+    for (unsigned n = 0; n < 4; ++n) {
+        auto* session = Session();
+        wtf_test_echo_session(session);
+        session->callback = wtf_test_echo_disconnected;
+        for (unsigned i = 0; i < 8; ++i) {
+            EXPECT_EQ(WTF_SUCCESS,
+                      wtf_test_echo_send(EchoStream(session), payload.data(), payload.size()));
+        }
+        EXPECT_EQ(WTF_ERROR_FLOW_CONTROL,
+                  wtf_test_echo_send(EchoStream(session), payload.data(), 1));
+    }
+    auto* extra = Session();
+    wtf_test_echo_session(extra);
+    extra->callback = wtf_test_echo_disconnected;
+    auto* stream = EchoStream(extra);
+    EXPECT_EQ(32u * 1024u * 1024u, wtf_test_echo_queued());
+    EXPECT_EQ(WTF_ERROR_FLOW_CONTROL, wtf_test_echo_send(stream, payload.data(), 1));
+    CompleteSends();
+    EXPECT_EQ(WTF_SUCCESS, wtf_test_echo_send(stream, payload.data(), 1));
+}
+
+TEST_F(LifetimeRegression, FailedEchoSendReturnsItsBudget)
+{
+    auto* session = Session();
+    wtf_test_echo_session(session);
+    session->callback = wtf_test_echo_disconnected;
+    auto* stream = EchoStream(session);
+    uint8_t data = 0;
+    fail_send = true;
+    EXPECT_EQ(WTF_ERROR_OUT_OF_MEMORY, wtf_test_echo_send(stream, &data, 1));
+    EXPECT_EQ(0u, wtf_test_echo_queued());
+    fail_send = false;
+    EXPECT_EQ(WTF_SUCCESS, wtf_test_echo_send(stream, &data, 1));
+}
+
+TEST_F(LifetimeRegression, ResetKeepsEchoContextUntilCancelledSendsComplete)
+{
+    auto* session = Session();
+    wtf_test_echo_session(session);
+    session->callback = wtf_test_echo_disconnected;
+    auto* stream = EchoStream(session);
+    uint8_t data = 0;
+    ASSERT_EQ(WTF_SUCCESS, wtf_test_echo_send(stream, &data, 1));
+    QUIC_STREAM_EVENT reset = {};
+    reset.Type = QUIC_STREAM_EVENT_PEER_SEND_ABORTED;
+    wtf_upgraded_stream_callback(stream->quic_stream, stream, &reset);
+    EXPECT_NE(nullptr, wtf_stream_get_context(stream));
+    EXPECT_EQ(1024u, wtf_test_echo_queued());
+    CompleteSends(true);
+    EXPECT_EQ(0u, wtf_test_echo_queued());
+}
+
+TEST_F(LifetimeRegression, TinyEchoSendsCannotBypassAllocationBudget)
+{
+    auto* session = Session();
+    wtf_test_echo_session(session);
+    session->callback = wtf_test_echo_disconnected;
+    auto* stream = EchoStream(session);
+    uint8_t data = 0;
+    for (unsigned i = 0; i < 1024; ++i) {
+        ASSERT_EQ(WTF_SUCCESS, wtf_test_echo_send(stream, &data, 1));
+    }
+    EXPECT_EQ(1024u * 1024u, wtf_test_echo_queued());
+    EXPECT_EQ(WTF_ERROR_FLOW_CONTROL, wtf_test_echo_send(stream, &data, 1));
+    CompleteSends();
+    EXPECT_EQ(WTF_SUCCESS, wtf_test_echo_send(stream, &data, 1));
+}
+
+} // namespace

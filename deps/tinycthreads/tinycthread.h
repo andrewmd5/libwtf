@@ -85,6 +85,8 @@ extern "C" {
 /* Platform specific includes */
 #if defined(_TTHREAD_POSIX_)
 #include <pthread.h>
+/* libwtf: load C23 once declarations before our compatibility macros. */
+#include <stdlib.h>
 #elif defined(_TTHREAD_WIN32_)
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN

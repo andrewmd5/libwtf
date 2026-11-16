@@ -1563,15 +1563,9 @@ static void wtf_http3_client_fail_session(wtf_http3_stream* stream, wtf_result_t
         return;
     }
 
+    wtf_session_add_ref(session);
     session->state = WTF_SESSION_CLOSED;
-    if (stream->connection && stream->connection->role == WTF_ENDPOINT_CLIENT) {
-        wtf_client_note_session_closed(stream->connection->client);
-    }
-    if (session->id != UINT64_MAX && stream->connection) {
-        mtx_lock(&stream->connection->sessions_mutex);
-        session_map_erase(&stream->connection->sessions, session->id);
-        mtx_unlock(&stream->connection->sessions_mutex);
-    }
+    wtf_session_retire(session);
 
     if (session->callback) {
         wtf_session_event_t event = {
@@ -1588,6 +1582,7 @@ static void wtf_http3_client_fail_session(wtf_http3_stream* stream, wtf_result_t
         };
         session->callback(&event);
     }
+    wtf_session_release(session);
 }
 
 static wtf_result_t wtf_http3_encode_connect_request(wtf_http3_stream* stream,
@@ -2886,92 +2881,58 @@ static QUIC_STATUS wtf_handle_stream_receive(wtf_http3_stream* stream, HQUIC Str
 static QUIC_STATUS wtf_handle_stream_shutdown_events(wtf_http3_stream* stream, HQUIC Stream,
                                                      QUIC_STREAM_EVENT* Event)
 {
+    (void)Stream;
     wtf_connection* conn = stream->connection;
-    uint64_t stream_id;
-    uint32_t stream_id_size = sizeof(stream_id);
-    QUIC_STATUS status = conn->context->quic_api->GetParam(
-        Stream, QUIC_PARAM_STREAM_ID, &stream_id_size, &stream_id);
 
-    wtf_http3_stream* stream_to_destroy = NULL;
-    if (Event->Type == QUIC_STREAM_EVENT_SHUTDOWN_COMPLETE) {
-        stream_to_destroy = stream;
+    if (Event->Type == QUIC_STREAM_EVENT_PEER_SEND_SHUTDOWN) {
+        stream->state = stream->state == WTF_INTERNAL_STREAM_STATE_HALF_CLOSED_LOCAL
+            ? WTF_INTERNAL_STREAM_STATE_CLOSED : WTF_INTERNAL_STREAM_STATE_HALF_CLOSED_REMOTE;
+    } else if (Event->Type == QUIC_STREAM_EVENT_PEER_SEND_ABORTED) {
+        stream->state = WTF_INTERNAL_STREAM_STATE_RESET;
     }
+
+    if (stream->webtransport_session && stream->webtransport_session->connect_stream == stream) {
+        wtf_session_shutdown(stream->webtransport_session, 0, "CONNECT stream closed");
+    }
+
+    if (Event->Type != QUIC_STREAM_EVENT_SHUTDOWN_COMPLETE) {
+        return QUIC_STATUS_SUCCESS;
+    }
+
+    /* A placeholder can finish without a RECEIVE or a readable stream ID. */
     bool release_map_ref = false;
-
-    if (QUIC_SUCCEEDED(status)) {
-        mtx_lock(&conn->streams_mutex);
-        http3_stream_map_itr itr = http3_stream_map_get(&conn->streams, stream_id);
-        if (!http3_stream_map_is_end(itr)) {
-            wtf_http3_stream* current = itr.data->val;
-
-            switch (Event->Type) {
-                case QUIC_STREAM_EVENT_PEER_SEND_SHUTDOWN:
-                    if (current->state == WTF_INTERNAL_STREAM_STATE_HALF_CLOSED_LOCAL) {
-                        current->state = WTF_INTERNAL_STREAM_STATE_CLOSED;
-                    } else {
-                        current->state = WTF_INTERNAL_STREAM_STATE_HALF_CLOSED_REMOTE;
-                    }
-                    WTF_LOG_DEBUG(conn->context, "stream",
-                                  "Peer send shutdown on stream %llu",
-                                  (unsigned long long)stream_id);
-                    break;
-
-                case QUIC_STREAM_EVENT_PEER_SEND_ABORTED:
-                    current->state = WTF_INTERNAL_STREAM_STATE_RESET;
-                    WTF_LOG_DEBUG(conn->context, "stream",
-                                  "Peer send aborted on stream %llu",
-                                  (unsigned long long)stream_id);
-                    break;
-
-                case QUIC_STREAM_EVENT_SHUTDOWN_COMPLETE:
-                    WTF_LOG_DEBUG(conn->context, "stream", "Stream %llu shutdown complete",
-                                  (unsigned long long)stream_id);
-
-                    if (current->id != UINT64_MAX && !conn->destroyed) {
-                        http3_stream_map_itr itr = http3_stream_map_get(&conn->streams, stream_id);
-                        if (!http3_stream_map_is_end(itr)) {
-                            http3_stream_map_erase(&conn->streams, stream_id);
-                            release_map_ref = true;
-                        }
-                    }
-
-                    // Clear connection references for infrastructure streams
-                    if (current == conn->control_stream) {
-                        conn->control_stream = NULL;
-                    } else if (current == conn->peer_control_stream) {
-                        conn->peer_control_stream = NULL;
-                    } else if (current == conn->qpack_encoder_stream) {
-                        conn->qpack_encoder_stream = NULL;
-                    } else if (current == conn->qpack_decoder_stream) {
-                        conn->qpack_decoder_stream = NULL;
-                    } else if (current == conn->peer_encoder_stream) {
-                        conn->peer_encoder_stream = NULL;
-                    } else if (current == conn->peer_decoder_stream) {
-                        conn->peer_decoder_stream = NULL;
-                    }
-
-                    stream_to_destroy = current;
-                    break;
-
-                default:
-                    break;
-            }
+    mtx_lock(&conn->streams_mutex);
+    if (!conn->destroyed && stream->id != UINT64_MAX) {
+        http3_stream_map_itr itr = http3_stream_map_get(&conn->streams, stream->id);
+        if (!http3_stream_map_is_end(itr) && itr.data->val == stream) {
+            http3_stream_map_erase(&conn->streams, stream->id);
+            release_map_ref = true;
         }
-        mtx_unlock(&conn->streams_mutex);
     }
-
-    if (stream_to_destroy) {
-        if (stream_to_destroy->webtransport_session
-            && stream_to_destroy->webtransport_session->connect_stream == stream_to_destroy) {
-            stream_to_destroy->webtransport_session->connect_stream = NULL;
-        }
-
-        if (release_map_ref) {
-            wtf_http3_stream_release(stream_to_destroy);
-        }
-        wtf_http3_stream_destroy(stream_to_destroy);
+    if (stream == conn->control_stream) {
+        conn->control_stream = NULL;
     }
+    if (stream == conn->peer_control_stream) {
+        conn->peer_control_stream = NULL;
+    }
+    if (stream == conn->qpack_encoder_stream) {
+        conn->qpack_encoder_stream = NULL;
+    }
+    if (stream == conn->qpack_decoder_stream) {
+        conn->qpack_decoder_stream = NULL;
+    }
+    if (stream == conn->peer_encoder_stream) {
+        conn->peer_encoder_stream = NULL;
+    }
+    if (stream == conn->peer_decoder_stream) {
+        conn->peer_decoder_stream = NULL;
+    }
+    mtx_unlock(&conn->streams_mutex);
 
+    if (release_map_ref) {
+        wtf_http3_stream_release(stream);
+    }
+    wtf_http3_stream_destroy(stream);
     return QUIC_STATUS_SUCCESS;
 }
 

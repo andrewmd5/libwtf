@@ -349,7 +349,6 @@ typedef struct wtf_session {
     wtf_http3_stream* connect_stream;
     wtf_session_state_t state;
     uint64_t id;
-    struct wtf_session* next_closed;
     bool retired;
 
     wtf_session_callback_t callback;
@@ -410,7 +409,6 @@ typedef struct wtf_connection {
     wtf_qpack_context qpack;
 
     session_map sessions;
-    wtf_session* closed_sessions;
     uint32_t max_sessions;
     mtx_t sessions_mutex;
 

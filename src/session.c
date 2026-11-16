@@ -9,6 +9,8 @@
 
 #define WTF_MAX_FLOW_CONTROL_VALUE (1ULL << 60)
 
+static void wtf_session_abort_streams(wtf_session* session, uint64_t error_code);
+
 bool wtf_session_process_datagram(wtf_session* session, const uint8_t* data, size_t length)
 {
     if (!session || (!data && length > 0))
@@ -33,24 +35,50 @@ bool wtf_session_process_datagram(wtf_session* session, const uint8_t* data, siz
     return true;
 }
 
-static void wtf_session_retire(wtf_session* session)
+void wtf_session_retire(wtf_session* session)
 {
     if (!session || !session->connection || session->retired) {
         return;
     }
 
     wtf_connection* conn = session->connection;
+    bool release_owner = false;
     mtx_lock(&conn->sessions_mutex);
     if (!session->retired) {
         session_map_erase(&conn->sessions, session->id);
         session->retired = true;
-        session->next_closed = conn->closed_sessions;
-        conn->closed_sessions = session;
+        release_owner = true;
         if (conn->role == WTF_ENDPOINT_CLIENT) {
             wtf_client_note_session_closed(conn->client);
         }
     }
     mtx_unlock(&conn->sessions_mutex);
+    if (release_owner) {
+        wtf_session_release(session);
+    }
+}
+
+void wtf_session_shutdown(wtf_session* session, uint32_t error_code, const char* reason)
+{
+    if (!session || session->state == WTF_SESSION_CLOSED) {
+        return;
+    }
+
+    /* Keep the callback's borrowed handle alive after releasing the map owner. */
+    wtf_session_add_ref(session);
+    session->state = WTF_SESSION_CLOSED;
+    session->close_error_code = error_code;
+    wtf_session_abort_streams(session, WTF_WEBTRANSPORT_SESSION_GONE);
+    wtf_session_retire(session);
+    if (session->callback) {
+        wtf_session_event_t event = {
+            .type = WTF_SESSION_EVENT_DISCONNECTED,
+            .session = session,
+            .user_context = session->user_context,
+            .disconnected = {.error_code = error_code, .reason = reason}};
+        session->callback(&event);
+    }
+    wtf_session_release(session);
 }
 
 static void wtf_session_abort_streams(wtf_session* session, uint64_t error_code)
@@ -152,6 +180,7 @@ void wtf_session_fail_flow_control(wtf_session* session)
                   "Closing session %llu due to WebTransport flow-control violation",
                   (unsigned long long)session->id);
 
+    wtf_session_add_ref(session);
     session->state = WTF_SESSION_CLOSED;
     wtf_session_abort_streams(session, WTF_WEBTRANSPORT_FLOW_CONTROL_ERROR);
     wtf_session_retire(session);
@@ -164,6 +193,7 @@ void wtf_session_fail_flow_control(wtf_session* session)
             .disconnected = {.error_code = 0, .reason = "flow control error"}};
         session->callback(&event);
     }
+    wtf_session_release(session);
 }
 
 bool wtf_session_accept_incoming_data(wtf_session* session, uint64_t length)
@@ -640,18 +670,7 @@ bool wtf_session_process_capsule(wtf_session* session, const wtf_capsule* capsul
                 free(session->close_reason);
             }
             session->close_reason = reason;
-            session->state = WTF_SESSION_CLOSED;
-            wtf_session_abort_streams(session, WTF_WEBTRANSPORT_SESSION_GONE);
-            wtf_session_retire(session);
-
-            if (session->callback) {
-                wtf_session_event_t event = {
-                    .type = WTF_SESSION_EVENT_DISCONNECTED,
-                    .session = (wtf_session_t*)session,
-                    .user_context = session->user_context,
-                    .disconnected = {.error_code = error_code, .reason = reason}};
-                session->callback(&event);
-            }
+            wtf_session_shutdown(session, error_code, reason);
 
             return true;
         }
@@ -739,7 +758,8 @@ wtf_result_t wtf_session_close(wtf_session_t* session, uint32_t error_code, cons
         }
     }
 
-    sess->state = WTF_SESSION_CLOSED;
+    wtf_session_add_ref(sess);
+    sess->state = WTF_SESSION_DRAINING;
     sess->close_error_code = error_code;
 
     if (sess->close_reason) {
@@ -776,16 +796,8 @@ wtf_result_t wtf_session_close(wtf_session_t* session, uint32_t error_code, cons
         }
     }
 
-    wtf_session_abort_streams(sess, WTF_WEBTRANSPORT_SESSION_GONE);
-    wtf_session_retire(sess);
-
-    if (sess->callback) {
-        wtf_session_event_t event = {.type = WTF_SESSION_EVENT_DISCONNECTED,
-                                     .session = session,
-                                     .user_context = sess->user_context,
-                                     .disconnected = {.error_code = error_code, .reason = reason}};
-        sess->callback(&event);
-    }
+    wtf_session_shutdown(sess, error_code, sess->close_reason);
+    wtf_session_release(sess);
 
     return result;
 }

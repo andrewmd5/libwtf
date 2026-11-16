@@ -325,14 +325,6 @@ static void wtf_connection_dispose(wtf_connection* conn)
     }
     session_map_cleanup(&conn->sessions);
 
-    wtf_session* closed_session = conn->closed_sessions;
-    conn->closed_sessions = NULL;
-    while (closed_session) {
-        wtf_session* next = closed_session->next_closed;
-        closed_session->next_closed = NULL;
-        wtf_session_destroy(closed_session);
-        closed_session = next;
-    }
     mtx_unlock(&conn->sessions_mutex);
 
     mtx_lock(&conn->streams_mutex);
@@ -536,20 +528,7 @@ QUIC_STATUS QUIC_API wtf_connection_callback(HQUIC Connection, void* Context,
 
             for (size_t i = 0; i < session_count; i++) {
                 wtf_session* session = sessions[i];
-                if (session->state != WTF_SESSION_CONNECTED) {
-                    continue;
-                }
-                session->state = WTF_SESSION_CLOSED;
-                if (!session->callback) {
-                    continue;
-                }
-                wtf_session_event_t event = {
-                    .type = WTF_SESSION_EVENT_DISCONNECTED,
-                    .session = (wtf_session_t*)session,
-                    .user_context = session->user_context,
-                    .disconnected = {.error_code = (uint32_t)error_code,
-                                     .reason = "Connection shutdown"}};
-                session->callback(&event);
+                wtf_session_shutdown(session, (uint32_t)error_code, "Connection shutdown");
             }
 
             for (size_t i = 0; i < session_count; i++) {

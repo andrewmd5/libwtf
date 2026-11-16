@@ -10,6 +10,30 @@ add_subdirectory(
 
 include(GoogleTest)
 
+# Compile the implementation into this executable to exercise internal ownership
+# with a mock MsQuic API, without exposing private symbols from the shared library.
+set(WTF_REGRESSION_SOURCES)
+foreach(WTF_SOURCE IN LISTS WTF_SOURCES)
+    get_filename_component(WTF_REGRESSION_SOURCE "${WTF_SOURCE}" ABSOLUTE BASE_DIR "${PROJECT_SOURCE_DIR}")
+    list(APPEND WTF_REGRESSION_SOURCES "${WTF_REGRESSION_SOURCE}")
+endforeach()
+add_executable(wtf_regression_tests
+    regression/test_lifetime.cc
+    regression/echo_harness.c
+    ${WTF_REGRESSION_SOURCES}
+)
+target_include_directories(wtf_regression_tests PRIVATE $<TARGET_PROPERTY:wtf,INCLUDE_DIRECTORIES>)
+target_compile_definitions(wtf_regression_tests PRIVATE WTF_EXPORTS)
+if(WTF_ENABLE_LOGGING)
+    target_compile_definitions(wtf_regression_tests PRIVATE WTF_ENABLE_LOGGING=1)
+endif()
+target_link_libraries(wtf_regression_tests PRIVATE GTest::gtest_main ${MSQUIC_LIBRARIES} ${PLATFORM_LIBS})
+if(WTF_ENABLE_COVERAGE)
+    target_compile_options(wtf_regression_tests PRIVATE ${WTF_COVERAGE_COMPILE_OPTIONS})
+    target_link_options(wtf_regression_tests PRIVATE ${WTF_COVERAGE_LINK_OPTIONS})
+endif()
+gtest_discover_tests(wtf_regression_tests PROPERTIES LABELS "unit;regression")
+
 set(WTF_UNIT_TEST_SOURCES
     unit/test_public_api.cc
     unit/test_varint.cc
@@ -141,7 +165,7 @@ endif()
 
 add_custom_target(test_unit
     COMMAND ${CMAKE_CTEST_COMMAND} --output-on-failure -L unit
-    DEPENDS wtf_unit_tests wtf_public_api_tests
+    DEPENDS wtf_unit_tests wtf_public_api_tests wtf_regression_tests
     COMMENT "Running GoogleTest unit and regression tests"
 )
 
@@ -153,7 +177,7 @@ add_custom_target(test_integration
 
 add_custom_target(test_all
     COMMAND ${CMAKE_CTEST_COMMAND} --output-on-failure
-    DEPENDS wtf_unit_tests wtf_public_api_tests wtf_e2e_tests wtf_browser_interop_server
+    DEPENDS wtf_unit_tests wtf_public_api_tests wtf_regression_tests wtf_e2e_tests wtf_browser_interop_server
     COMMENT "Running all tests"
 )
 
@@ -165,8 +189,10 @@ add_custom_target(test_report
             --gtest_output=xml:${WTF_REPORT_DIR}/tests/wtf_unit_tests.xml
     COMMAND $<TARGET_FILE:wtf_public_api_tests>
             --gtest_output=xml:${WTF_REPORT_DIR}/tests/wtf_public_api_tests.xml
+    COMMAND $<TARGET_FILE:wtf_regression_tests>
+            --gtest_output=xml:${WTF_REPORT_DIR}/tests/wtf_regression_tests.xml
     COMMAND ${CMAKE_CTEST_COMMAND} --output-on-failure -L integration
-    DEPENDS wtf_unit_tests wtf_public_api_tests wtf_e2e_tests wtf_browser_interop_server
+    DEPENDS wtf_unit_tests wtf_public_api_tests wtf_regression_tests wtf_e2e_tests wtf_browser_interop_server
     COMMENT "Writing test reports to ${WTF_REPORT_DIR}/tests"
 )
 
@@ -184,7 +210,7 @@ if(WTF_ENABLE_COVERAGE AND GCOVR_EXECUTABLE)
                 --xml ${WTF_REPORT_DIR}/coverage/coverage.xml
                 --html-details ${WTF_REPORT_DIR}/coverage/index.html
                 --print-summary
-        DEPENDS wtf_unit_tests wtf_public_api_tests wtf_e2e_tests wtf_browser_interop_server
+        DEPENDS wtf_unit_tests wtf_public_api_tests wtf_regression_tests wtf_e2e_tests wtf_browser_interop_server
         COMMENT "Writing coverage reports to ${WTF_REPORT_DIR}/coverage"
     )
 elseif(WTF_ENABLE_COVERAGE)

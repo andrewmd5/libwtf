@@ -1,6 +1,7 @@
 #include <inttypes.h>
 #include <signal.h>
 #include <stdbool.h>
+#include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -55,6 +56,8 @@ typedef struct {
 static server_stats_t g_stats = {0};
 
 typedef struct session_context {
+    atomic_uint ref_count;
+    atomic_size_t queued_bytes;
     wtf_session_t* session;
     uint32_t session_id;
     time_t created_time;
@@ -64,6 +67,8 @@ typedef struct session_context {
 } session_context_t;
 
 typedef struct stream_context {
+    session_context_t* session_context;
+    atomic_size_t queued_bytes;
     wtf_stream_t* stream;
     uint32_t stream_id;
     wtf_session_t* session;
@@ -72,6 +77,89 @@ typedef struct stream_context {
     bool needs_welcome;
     char stream_type[32];
 } stream_context_t;
+
+#define ECHO_STREAM_SEND_LIMIT (1024u * 1024u)
+#define ECHO_SESSION_SEND_LIMIT (8u * ECHO_STREAM_SEND_LIMIT)
+#define ECHO_TOTAL_SEND_LIMIT (32u * ECHO_STREAM_SEND_LIMIT)
+/* Bound request metadata as well as payloads, including one-byte sends. */
+#define ECHO_MIN_SEND_CHARGE 1024u
+
+static atomic_size_t g_queued_bytes;
+
+typedef struct {
+    size_t charge;
+    uint8_t data[];
+} echo_send_t;
+
+static bool echo_reserve_bytes(atomic_size_t* counter, size_t length, size_t limit)
+{
+    size_t current = atomic_load(counter);
+    do {
+        if (length > limit || current > limit - length) {
+            return false;
+        }
+    } while (!atomic_compare_exchange_weak(counter, &current, current + length));
+    return true;
+}
+
+static void echo_release_bytes(stream_context_t* stream, size_t length)
+{
+    atomic_fetch_sub(&stream->queued_bytes, length);
+    atomic_fetch_sub(&stream->session_context->queued_bytes, length);
+    atomic_fetch_sub(&g_queued_bytes, length);
+}
+
+static void echo_session_context_release(session_context_t* session)
+{
+    if (session && atomic_fetch_sub(&session->ref_count, 1) == 1) {
+        free(session);
+    }
+}
+
+static void echo_stream_context_init(stream_context_t* stream, wtf_session_t* session)
+{
+    atomic_init(&stream->queued_bytes, 0);
+    stream->session_context = wtf_session_get_context(session);
+    if (stream->session_context) {
+        atomic_fetch_add(&stream->session_context->ref_count, 1);
+    }
+}
+
+static wtf_result_t echo_stream_send(stream_context_t* stream, const void* data, size_t length)
+{
+    if (!stream || !stream->session_context || length == 0 || length > UINT32_MAX) {
+        return WTF_ERROR_INVALID_PARAMETER;
+    }
+    size_t charge = length < ECHO_MIN_SEND_CHARGE ? ECHO_MIN_SEND_CHARGE : length;
+    if (!echo_reserve_bytes(&stream->queued_bytes, charge, ECHO_STREAM_SEND_LIMIT)) {
+        return WTF_ERROR_FLOW_CONTROL;
+    }
+    if (!echo_reserve_bytes(&stream->session_context->queued_bytes, charge,
+                            ECHO_SESSION_SEND_LIMIT)) {
+        atomic_fetch_sub(&stream->queued_bytes, charge);
+        return WTF_ERROR_FLOW_CONTROL;
+    }
+    if (!echo_reserve_bytes(&g_queued_bytes, charge, ECHO_TOTAL_SEND_LIMIT)) {
+        atomic_fetch_sub(&stream->queued_bytes, charge);
+        atomic_fetch_sub(&stream->session_context->queued_bytes, charge);
+        return WTF_ERROR_FLOW_CONTROL;
+    }
+
+    echo_send_t* send = malloc(sizeof(*send) + length);
+    if (!send) {
+        echo_release_bytes(stream, charge);
+        return WTF_ERROR_OUT_OF_MEMORY;
+    }
+    send->charge = charge;
+    memcpy(send->data, data, length);
+    wtf_buffer_t buffer = {.data = send->data, .length = (uint32_t)length};
+    wtf_result_t result = wtf_stream_send(stream->stream, &buffer, 1, false, send);
+    if (result != WTF_SUCCESS) {
+        echo_release_bytes(stream, charge);
+        free(send);
+    }
+    return result;
+}
 
 typedef enum {
     CMD_UNKNOWN,
@@ -208,8 +296,9 @@ wtf_result_t handle_request_stream(wtf_session_t* session, const char* stream_ty
         g_stats.server_streams_created++;
 
         // Create stream context and mark it as needing welcome message
-        stream_context_t* stream_ctx = malloc(sizeof(stream_context_t));
+        stream_context_t* stream_ctx = calloc(1, sizeof(stream_context_t));
         if (stream_ctx) {
+            echo_stream_context_init(stream_ctx, session);
             stream_ctx->stream = stream;
             stream_ctx->stream_id = (uint32_t)(g_stats.streams_created + 1);
             stream_ctx->session = session;
@@ -376,7 +465,11 @@ void stream_callback(const wtf_stream_event_t* event)
 
     switch (event->type) {
         case WTF_STREAM_EVENT_SEND_COMPLETE: {
-            free(event->send_complete.operation_context);
+            echo_send_t* send = event->send_complete.operation_context;
+            if (send) {
+                echo_release_bytes(stream_ctx, send->charge);
+                free(send);
+            }
             break;
         }
 
@@ -388,6 +481,11 @@ void stream_callback(const wtf_stream_event_t* event)
 
             size_t total_length = 0;
             for (uint32_t i = 0; i < buffer_count; i++) {
+                if (data[i].length > ECHO_STREAM_SEND_LIMIT - total_length) {
+                    wtf_stream_set_receive_enabled(event->stream, false);
+                    wtf_stream_abort(event->stream, 1);
+                    return;
+                }
                 total_length += data[i].length;
             }
 
@@ -430,14 +528,15 @@ void stream_callback(const wtf_stream_event_t* event)
                     break;
                 case CMD_ECHO:
                 default: {
-                    wtf_result_t result = wtf_stream_send_copy(event->stream, text, total_length,
-                                                               false);
+                    wtf_result_t result = echo_stream_send(stream_ctx, text, total_length);
                     if (result == WTF_SUCCESS) {
                         g_stats.bytes_sent += total_length;
                         printf("[STREAM] Echoed %zu bytes back\n", total_length);
                     } else {
                         printf("[STREAM] Failed to echo data: %s\n",
                                wtf_result_to_string(result));
+                        wtf_stream_set_receive_enabled(event->stream, false);
+                        wtf_stream_abort(event->stream, 1);
                     }
                 }
             }
@@ -455,6 +554,11 @@ void stream_callback(const wtf_stream_event_t* event)
             printf("[STREAM] Stream %u fully closed\n", stream_ctx ? stream_ctx->stream_id : 0);
             g_stats.streams_destroyed++;
             if (stream_ctx) {
+                wtf_stream_set_context(event->stream, NULL);
+                echo_session_context_release(stream_ctx->session_context);
+                if (stream_ctx->is_server_initiated) {
+                    wtf_stream_unref(event->stream);
+                }
                 free(stream_ctx);
             }
             break;
@@ -462,10 +566,7 @@ void stream_callback(const wtf_stream_event_t* event)
         case WTF_STREAM_EVENT_ABORTED:
             printf("[STREAM] Stream %u aborted with error %u\n",
                    stream_ctx ? stream_ctx->stream_id : 0, event->aborted.error_code);
-            g_stats.streams_destroyed++;
-            if (stream_ctx) {
-                free(stream_ctx);
-            }
+            /* Send completions still need this context; CLOSED releases it. */
             break;
 
         default:
@@ -483,6 +584,8 @@ void session_callback(const wtf_session_event_t* event)
 
             session_ctx = malloc(sizeof(session_context_t));
             if (session_ctx) {
+                atomic_init(&session_ctx->ref_count, 1);
+                atomic_init(&session_ctx->queued_bytes, 0);
                 session_ctx->session = event->session;
                 session_ctx->session_id = (uint32_t)++g_stats.sessions_created;
                 session_ctx->created_time = time(NULL);
@@ -509,8 +612,9 @@ void session_callback(const wtf_session_event_t* event)
             stream_context_t* stream_ctx = (stream_context_t*)wtf_stream_get_context(
                 event->stream_opened.stream);
             if (!stream_ctx) {
-                stream_ctx = malloc(sizeof(stream_context_t));
+                stream_ctx = calloc(1, sizeof(stream_context_t));
                 if (stream_ctx) {
+                    echo_stream_context_init(stream_ctx, event->session);
                     stream_ctx->stream = event->stream_opened.stream;
                     stream_ctx->stream_id = (uint32_t)g_stats.streams_created;
                     stream_ctx->session = event->session;
@@ -538,7 +642,8 @@ void session_callback(const wtf_session_event_t* event)
 
             g_stats.sessions_destroyed++;
             if (session_ctx) {
-                free(session_ctx);
+                wtf_session_set_context(event->session, NULL);
+                echo_session_context_release(session_ctx);
             }
             break;
         }
@@ -794,6 +899,8 @@ int main(int argc, char* argv[])
     config.handshake_timeout_ms = 10000;
     config.enable_0rtt = true;
     config.enable_migration = true;
+    /* Completions must reflect transport progress, not a local buffer copy. */
+    config.send_buffering = WTF_SEND_BUFFERING_DISABLED;
 
     status = wtf_server_create(g_context, &config, &g_server);
     if (status != WTF_SUCCESS) {

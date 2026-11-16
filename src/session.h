@@ -9,6 +9,8 @@ wtf_session* wtf_session_create(wtf_connection* conn, wtf_http3_stream* connect_
 void wtf_session_destroy(wtf_session* session);
 void wtf_session_add_ref(wtf_session* session);
 void wtf_session_release(wtf_session* session);
+void wtf_session_retire(wtf_session* session);
+void wtf_session_shutdown(wtf_session* session, uint32_t error_code, const char* reason);
 wtf_result_t wtf_session_send_capsule(wtf_session* session, uint64_t type, const uint8_t* data,
                                       size_t length);
 
