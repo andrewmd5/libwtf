@@ -207,7 +207,7 @@ else()
         endif()
 
         set(WTF_BUNDLED_MSQUIC_PATCHES
-            "${CMAKE_CURRENT_SOURCE_DIR}/cmake/patches/msquic/msquic-16c49e6-Align reliable reset identifiers and silent stream shutdown.patch"
+            "${CMAKE_CURRENT_SOURCE_DIR}/cmake/patches/msquic/0001-align-reliable-reset-and-silent-shutdown.patch"
         )
 
         foreach(WTF_BUNDLED_MSQUIC_PATCH IN LISTS WTF_BUNDLED_MSQUIC_PATCHES)
