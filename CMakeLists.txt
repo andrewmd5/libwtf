@@ -208,6 +208,7 @@ else()
 
         set(WTF_BUNDLED_MSQUIC_PATCHES
             ${CMAKE_CURRENT_SOURCE_DIR}/cmake/patches/msquic/reliable-reset-draft07.patch
+            ${CMAKE_CURRENT_SOURCE_DIR}/cmake/patches/msquic/silent-stream-shutdown.patch
         )
 
         foreach(WTF_BUNDLED_MSQUIC_PATCH IN LISTS WTF_BUNDLED_MSQUIC_PATCHES)
