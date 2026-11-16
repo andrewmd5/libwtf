@@ -1,3 +1,14 @@
+From 16c49e64f0c73fcee4faa31d958dd137f628b2b6 Mon Sep 17 00:00:00 2001
+From: andrewmd5 <1297077+andrewmd5@users.noreply.github.com>
+Date: Fri, 30 Oct 2026 10:49:47 +0900
+Subject: [PATCH] Align reliable reset identifiers and silent stream shutdown
+
+---
+ src/core/crypto_tls.c  | 2 +-
+ src/core/frame.h       | 4 ++--
+ src/core/stream_send.c | 2 +-
+ 3 files changed, 4 insertions(+), 4 deletions(-)
+
 diff --git a/src/core/crypto_tls.c b/src/core/crypto_tls.c
 index 4fa6b8cc7..e339f910e 100644
 --- a/src/core/crypto_tls.c
@@ -26,3 +37,19 @@ index 35b94bd81..11f64ed23 100644
      QUIC_FRAME_DATAGRAM             = 0x30ULL, // to 0x31
      QUIC_FRAME_DATAGRAM_1           = 0x31ULL,
      /* 0x32 to 0xad are unused currently */
+diff --git a/src/core/stream_send.c b/src/core/stream_send.c
+index 0ac7dd101..9fdc7edef 100644
+--- a/src/core/stream_send.c
++++ b/src/core/stream_send.c
+@@ -169,7 +169,7 @@ QuicStreamSendShutdown(
+             QUIC_STREAM_SEND_FLAG_FIN,
+             DelaySend);
+ 
+-    } else if (Stream->ReliableOffsetSend == 0 || Stream->Flags.LocalCloseResetReliable) {
++    } else if (Silent || Stream->ReliableOffsetSend == 0 || Stream->Flags.LocalCloseResetReliable) {
+         //
+         // Enter abortive branch if we are not aborting reliably or we have done it already.
+         // Essentially, Reset trumps Reliable Reset, so if we have to call shutdown again, we reset.
+-- 
+2.50.1
+
