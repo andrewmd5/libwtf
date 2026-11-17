@@ -17,6 +17,11 @@ target_link_libraries(wtf_echo_client
         wtf
 )
 
+if(WTF_BUILD_CPP)
+    add_executable(wtf_echo_cpp echo_cpp.cc)
+    target_link_libraries(wtf_echo_cpp PRIVATE WebTransport::cpp)
+endif()
+
 # Copy certificates if they exist
 if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/certs")
     file(COPY certs DESTINATION ${CMAKE_BINARY_DIR})

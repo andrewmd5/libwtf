@@ -10,6 +10,22 @@ add_subdirectory(
 
 include(GoogleTest)
 
+if(WTF_BUILD_CPP)
+    add_executable(wtf_cpp_tests cpp/test_wrapper.cc cpp/header_tu.cc)
+    target_include_directories(wtf_cpp_tests PRIVATE "${PROJECT_SOURCE_DIR}/include")
+    target_compile_features(wtf_cpp_tests PRIVATE cxx_std_23)
+    target_compile_definitions(wtf_cpp_tests PRIVATE WTF_EXPORTS)
+    target_link_libraries(wtf_cpp_tests PRIVATE GTest::gtest_main)
+    gtest_discover_tests(wtf_cpp_tests PROPERTIES LABELS "unit;cpp")
+
+    add_executable(wtf_cpp_integration_tests cpp/test_integration.cc)
+    target_compile_definitions(wtf_cpp_integration_tests PRIVATE
+        WTF_TEST_CERT_DIR="${PROJECT_SOURCE_DIR}/certs")
+    target_link_libraries(wtf_cpp_integration_tests PRIVATE WebTransport::cpp GTest::gtest_main)
+    gtest_discover_tests(wtf_cpp_integration_tests
+        PROPERTIES LABELS "integration;cpp" TIMEOUT 15)
+endif()
+
 # Compile the implementation into this executable to exercise internal ownership
 # with a mock MsQuic API, without exposing private symbols from the shared library.
 set(WTF_REGRESSION_SOURCES)

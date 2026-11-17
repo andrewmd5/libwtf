@@ -37,6 +37,29 @@ responses should apply similar limits and backpressure.
 
 See [include/wtf.h](include/wtf.h).
 
+## C++
+
+Include [wtf.hpp](include/wtf.hpp) and link libwtf. With CMake, link
+`WebTransport::cpp` instead of `WebTransport::wtf` to request C++23.
+The standard library must provide `std::expected` and `std::move_only_function`.
+Clang 21 with libstdc++ 15 works; libc++ currently lacks the latter.
+
+`Context`, `Client`, and `Server` are move-only RAII owners. `Session` and `Stream`
+retain their C handles; copying retains and destruction releases. Call `Close()`
+or `Abort()` to change transport state. Callback views are borrowed; use
+`Retain()` to keep one. Children keep the context alive after its owner moves or
+leaves scope. Destroy clients and servers outside callbacks, after synchronizing
+other application threads that use them.
+
+`Send(std::vector<std::byte>)` takes ownership until completion. `SendCopy()`
+copies before returning. `SendBorrowed()` leaves the payload with the caller
+until completion. Datagram buffers stay alive until a final send state.
+Callbacks are `noexcept`, run on transport threads, and can run concurrently for
+different connections. Receive data and response headers are callback-only views.
+
+Enable `WTF_BUILD_CPP` along with `WTF_BUILD_TESTS` or `WTF_BUILD_SAMPLES` to build
+the wrapper tests or [C++ echo server](samples/echo_cpp.cc).
+
 ## License
 
 MIT

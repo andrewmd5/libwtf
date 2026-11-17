@@ -244,7 +244,7 @@ TEST(PublicApiSurface, SessionNullContracts)
               wtf_session_send_datagram_copy(nullptr, "data", 4));
     EXPECT_EQ(WTF_ERROR_INVALID_PARAMETER, wtf_session_create_stream(nullptr,
                                                                      WTF_STREAM_BIDIRECTIONAL,
-                                                                     nullptr));
+                                                                     nullptr, nullptr, nullptr));
     EXPECT_EQ(WTF_SESSION_CLOSED, wtf_session_get_state(nullptr));
     EXPECT_EQ(WTF_ERROR_INVALID_PARAMETER,
               wtf_session_get_peer_address(nullptr, nullptr, nullptr));

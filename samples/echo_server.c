@@ -289,31 +289,30 @@ wtf_result_t handle_request_stream(wtf_session_t* session, const char* stream_ty
         type = WTF_STREAM_UNIDIRECTIONAL;
     }
 
+    stream_context_t* stream_ctx = calloc(1, sizeof(stream_context_t));
+    if (!stream_ctx) {
+        return WTF_ERROR_OUT_OF_MEMORY;
+    }
+    echo_stream_context_init(stream_ctx, session);
+    stream_ctx->stream_id = (uint32_t)(g_stats.streams_created + 1);
+    stream_ctx->session = session;
+    stream_ctx->created_time = time(NULL);
+    stream_ctx->is_server_initiated = true;
+    stream_ctx->needs_welcome = true;
+    strncpy(stream_ctx->stream_type, stream_type, sizeof(stream_ctx->stream_type) - 1);
+
     wtf_stream_t* stream = NULL;
-    wtf_result_t result = wtf_session_create_stream(session, type, &stream);
+    wtf_result_t result = wtf_session_create_stream(session, type, stream_callback, stream_ctx,
+                                                   &stream);
 
     if (result == WTF_SUCCESS) {
         g_stats.server_streams_created++;
 
-        // Create stream context and mark it as needing welcome message
-        stream_context_t* stream_ctx = calloc(1, sizeof(stream_context_t));
-        if (stream_ctx) {
-            echo_stream_context_init(stream_ctx, session);
-            stream_ctx->stream = stream;
-            stream_ctx->stream_id = (uint32_t)(g_stats.streams_created + 1);
-            stream_ctx->session = session;
-            stream_ctx->created_time = time(NULL);
-            stream_ctx->is_server_initiated = true;
-            stream_ctx->needs_welcome = true;
-            strncpy(stream_ctx->stream_type, stream_type, sizeof(stream_ctx->stream_type) - 1);
-            stream_ctx->stream_type[sizeof(stream_ctx->stream_type) - 1] = '\0';
-
-            wtf_stream_set_context(stream, stream_ctx);
-        }
-
-        wtf_stream_set_callback(stream, stream_callback);
+        wtf_stream_unref(stream);
         printf("[CMD] Server stream created, waiting for open event\n");
     } else {
+        echo_session_context_release(stream_ctx->session_context);
+        free(stream_ctx);
         printf("[CMD] Failed to create server stream: %s\n", wtf_result_to_string(result));
     }
 
@@ -615,7 +614,6 @@ void session_callback(const wtf_session_event_t* event)
                 stream_ctx = calloc(1, sizeof(stream_context_t));
                 if (stream_ctx) {
                     echo_stream_context_init(stream_ctx, event->session);
-                    stream_ctx->stream = event->stream_opened.stream;
                     stream_ctx->stream_id = (uint32_t)g_stats.streams_created;
                     stream_ctx->session = event->session;
                     stream_ctx->created_time = time(NULL);
@@ -627,6 +625,9 @@ void session_callback(const wtf_session_event_t* event)
                 }
             }
 
+            if (stream_ctx) {
+                stream_ctx->stream = event->stream_opened.stream;
+            }
             wtf_stream_set_callback(event->stream_opened.stream, stream_callback);
 
             printf("[SESSION] Stream %u configured (server-initiated: %s)\n",

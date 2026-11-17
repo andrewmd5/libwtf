@@ -995,6 +995,7 @@ wtf_result_t wtf_session_send_datagram_copy(wtf_session_t* session, const void* 
 }
 
 wtf_result_t wtf_session_create_stream(wtf_session_t* session, wtf_stream_type_t type,
+                                       wtf_stream_callback_t callback, void* user_context,
                                        wtf_stream_t** stream)
 {
     if (!session || !stream) {
@@ -1028,6 +1029,8 @@ wtf_result_t wtf_session_create_stream(wtf_session_t* session, wtf_stream_type_t
         wtf_session_release_outgoing_stream(sess, type);
         return WTF_ERROR_OUT_OF_MEMORY;
     }
+    wt_stream->callback = callback;
+    wt_stream->user_context = user_context;
 
     wtf_connection* conn = sess->connection;
 
