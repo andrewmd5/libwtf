@@ -9,6 +9,9 @@
 #include "conn.h"
 #include "log.h"
 #include "utils.h"
+#ifdef WTF_QUIC_BACKEND_NETWORK
+    #include "quic/network.h"
+#endif
 
 static void wtf_quic_addr_set_family(QUIC_ADDR* address, QUIC_ADDRESS_FAMILY family)
 {
@@ -212,6 +215,15 @@ wtf_result_t wtf_server_start(wtf_server_t* server)
 
     QUIC_STATUS status = srv->context->quic_api->ListenerOpen(
         srv->context->registration, wtf_listener_callback, srv, &srv->listener);
+#ifdef WTF_QUIC_BACKEND_NETWORK
+    if (QUIC_SUCCEEDED(status)) {
+        status = wtf_network_listener_set_configuration(srv->listener, srv->configuration);
+        if (QUIC_FAILED(status)) {
+            srv->context->quic_api->ListenerClose(srv->listener);
+            srv->listener = NULL;
+        }
+    }
+#endif
 
     if (QUIC_FAILED(status)) {
         WTF_LOG_ERROR(srv->context, "server", "ListenerOpen failed: 0x%x", status);
@@ -321,6 +333,14 @@ wtf_result_t wtf_server_create(wtf_context_t* context, const wtf_server_config_t
     if (!context || !config || !server) {
         return WTF_ERROR_INVALID_PARAMETER;
     }
+#ifdef WTF_QUIC_BACKEND_NETWORK
+    if (config->draft == WTF_WEBTRANSPORT_DRAFT_15 && !wtf_network_supports_reliable_reset()) {
+        return WTF_ERROR_NOT_SUPPORTED;
+    }
+    if (config && config->enable_0rtt && !wtf_network_supports_early_data()) {
+        return WTF_ERROR_NOT_SUPPORTED;
+    }
+#endif
 
     ctx = context;
 

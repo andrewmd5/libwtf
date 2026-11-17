@@ -49,6 +49,11 @@ option(WTF_BUILD_SAMPLES "Build sample applications" OFF)
 option(WTF_BUILD_CPP "Build C++23 wrapper examples and tests" OFF)
 option(WTF_ENABLE_LOGGING "Enable logging support" ON)
 option(WTF_USE_EXTERNAL_MSQUIC "Use an external msquic installation" OFF)
+set(WTF_QUIC_BACKEND "msquic" CACHE STRING "QUIC implementation: msquic or network")
+set_property(CACHE WTF_QUIC_BACKEND PROPERTY STRINGS msquic network)
+if(NOT WTF_QUIC_BACKEND MATCHES "^(msquic|network)$")
+    message(FATAL_ERROR "WTF_QUIC_BACKEND must be msquic or network")
+endif()
 option(WTF_APPLY_BUNDLED_MSQUIC_PATCHES "Apply libwtf patches to the bundled msquic submodule" ON)
 option(WTF_ENABLE_COVERAGE "Build tests with coverage instrumentation" OFF)
 option(BUILD_SHARED_LIBS "Build shared libraries" ON)
@@ -157,7 +162,36 @@ else()
 endif()
 
 
-if(WTF_USE_EXTERNAL_MSQUIC)
+if(WTF_QUIC_BACKEND STREQUAL "network")
+    if(NOT APPLE)
+        message(FATAL_ERROR "The network QUIC backend requires an Apple platform")
+    endif()
+    if(WTF_USE_EXTERNAL_MSQUIC)
+        message(FATAL_ERROR "WTF_USE_EXTERNAL_MSQUIC is incompatible with WTF_QUIC_BACKEND=network")
+    endif()
+    if(NOT CMAKE_OSX_DEPLOYMENT_TARGET)
+        set(CMAKE_OSX_DEPLOYMENT_TARGET 15.0)
+    endif()
+    add_compile_definitions(QUIC_API_ENABLE_PREVIEW_FEATURES=1 WTF_QUIC_BACKEND_NETWORK=1)
+    set(MSQUIC_INCLUDE_DIRS ${CMAKE_CURRENT_SOURCE_DIR}/msquic/src/inc)
+    if(NOT EXISTS "${MSQUIC_INCLUDE_DIRS}/msquic.h")
+        message(FATAL_ERROR "Initialize the msquic submodule for its public API headers")
+    endif()
+    set(MSQUIC_LIBRARIES "-framework Network")
+    set(WTF_BACKEND_SOURCES
+        src/quic/network.c
+        src/quic/network_credentials.c
+        src/quic/network_listener.c
+        src/quic/network_connection.c
+        src/quic/network_stream.c
+        src/quic/network_send.c
+        src/quic/network_session.c
+    )
+    set_source_files_properties(${WTF_BACKEND_SOURCES} PROPERTIES COMPILE_OPTIONS "-fblocks")
+    # PEM credentials require the public macOS SecKeychain import APIs.
+    set_source_files_properties(src/quic/network_credentials.c
+        PROPERTIES COMPILE_OPTIONS "-fblocks;-Wno-deprecated-declarations")
+elseif(WTF_USE_EXTERNAL_MSQUIC)
     find_package(msquic CONFIG REQUIRED)
     set(MSQUIC_LIBRARIES msquic)
 else()
@@ -205,6 +239,7 @@ else()
 
         set(WTF_BUNDLED_MSQUIC_PATCHES
             "${CMAKE_CURRENT_SOURCE_DIR}/cmake/patches/msquic/0001-align-reliable-reset-and-silent-shutdown.patch"
+            "${CMAKE_CURRENT_SOURCE_DIR}/cmake/patches/msquic/0002-count-pending-sends-in-reliable-offset.patch"
         )
 
         foreach(WTF_BUNDLED_MSQUIC_PATCH IN LISTS WTF_BUNDLED_MSQUIC_PATCHES)
@@ -307,6 +342,7 @@ else()
 endif()
 
 set(WTF_SOURCES
+    ${WTF_BACKEND_SOURCES}
     deps/tinycthreads/tinycthread.c
     deps/ls-qpack/lsqpack.c
     deps/xxhash/xxhash.c

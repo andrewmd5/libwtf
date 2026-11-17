@@ -478,7 +478,8 @@ bool wtf_qpack_preinit(wtf_qpack_context* qpack, uint32_t max_table_capacity,
     qpack->initialized = false;
     qpack->tsu_buf_sz = sizeof(qpack->tsu_buf);
     lsqpack_enc_preinit(&qpack->encoder, NULL);
-    lsqpack_dec_init(&qpack->decoder, NULL, 0, 0, &wtf_qpack_decoder_interface, 0);
+    lsqpack_dec_init(&qpack->decoder, NULL, max_table_capacity, max_blocked_streams,
+        &wtf_qpack_decoder_interface, 0);
     return true;
 }
 
@@ -491,9 +492,9 @@ void wtf_qpack_cleanup(wtf_qpack_context* qpack)
 
     if (qpack->initialized) {
         lsqpack_enc_cleanup(&qpack->encoder);
-        lsqpack_dec_cleanup(&qpack->decoder);
         qpack->initialized = false;
     }
+    lsqpack_dec_cleanup(&qpack->decoder);
 
     mtx_unlock(&qpack->mutex);
     mtx_destroy(&qpack->mutex);
@@ -518,13 +519,6 @@ bool wtf_qpack_init_encoder(wtf_context* ctx, wtf_qpack_context* qpack)
     uint32_t blocked_streams = (uint32_t)min(qpack->max_blocked_streams,
                                              qpack->peer_blocked_streams);
 
-    if (table_capacity == 0) {
-        table_capacity = WTF_QPACK_DYNAMIC_TABLE_SIZE;
-    }
-    if (blocked_streams == 0) {
-        blocked_streams = WTF_QPACK_MAX_BLOCKED_STREAMS;
-    }
-
     qpack->tsu_buf_sz = sizeof(qpack->tsu_buf);
     int result = lsqpack_enc_init(&qpack->encoder, NULL, table_capacity, table_capacity,
                                   blocked_streams, LSQPACK_ENC_OPT_STAGE_2, qpack->tsu_buf,
@@ -534,10 +528,6 @@ bool wtf_qpack_init_encoder(wtf_context* ctx, wtf_qpack_context* qpack)
         WTF_LOG_ERROR(ctx, "qpack", "Failed to initialize QPACK encoder: %d", result);
         goto cleanup_unlock;
     }
-
-    lsqpack_dec_cleanup(&qpack->decoder);
-    lsqpack_dec_init(&qpack->decoder, NULL, table_capacity, blocked_streams,
-                     &wtf_qpack_decoder_interface, (enum lsqpack_dec_opts)0);
 
     qpack->initialized = true;
     success = true;
@@ -587,11 +577,6 @@ bool wtf_qpack_process_encoder(wtf_context* ctx, wtf_qpack_context* qpack, const
     }
 
     mtx_lock(&qpack->mutex);
-
-    if (!qpack->initialized) {
-        WTF_LOG_ERROR(ctx, "qpack", "QPACK not initialized");
-        goto cleanup_unlock;
-    }
 
     int result = lsqpack_dec_enc_in(&qpack->decoder, data, length);
     if (result != 0) {

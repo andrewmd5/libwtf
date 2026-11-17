@@ -375,6 +375,9 @@ QUIC_STATUS QUIC_API wtf_connection_callback(HQUIC Connection, void* Context,
 
     switch (Event->Type) {
         case QUIC_CONNECTION_EVENT_CONNECTED: {
+            uint32_t address_size = sizeof(conn->peer_address);
+            conn->context->quic_api->GetParam(Connection, QUIC_PARAM_CONN_REMOTE_ADDRESS,
+                &address_size, &conn->peer_address);
             WTF_LOG_INFO(conn->context, "conn",
                          "Connection established - starting HTTP/3 handshake");
 
@@ -595,6 +598,11 @@ QUIC_STATUS QUIC_API wtf_connection_callback(HQUIC Connection, void* Context,
         }
 
         case QUIC_CONNECTION_EVENT_DATAGRAM_STATE_CHANGED: {
+#ifdef WTF_QUIC_BACKEND_NETWORK
+            uint32_t address_size = sizeof(conn->peer_address);
+            conn->context->quic_api->GetParam(Connection, QUIC_PARAM_CONN_REMOTE_ADDRESS,
+                &address_size, &conn->peer_address);
+#endif
             bool send_enabled = Event->DATAGRAM_STATE_CHANGED.SendEnabled ? true : false;
             uint32_t max_send_length = send_enabled ? Event->DATAGRAM_STATE_CHANGED.MaxSendLength
                                                     : 0;
@@ -635,52 +643,8 @@ QUIC_STATUS QUIC_API wtf_connection_callback(HQUIC Connection, void* Context,
             return QUIC_STATUS_SUCCESS;
         }
 
-        case QUIC_CONNECTION_EVENT_STREAMS_AVAILABLE: {
-            if (!wtf_connection_uses_webtransport_flow_control(conn)) {
-                return QUIC_STATUS_SUCCESS;
-            }
-
-            uint64_t uni_available = Event->STREAMS_AVAILABLE.UnidirectionalCount;
-            uint64_t bidi_available = Event->STREAMS_AVAILABLE.BidirectionalCount;
-
-            size_t session_count = 0;
-            wtf_session** sessions = NULL;
-            mtx_lock(&conn->sessions_mutex);
-            session_count = session_map_size(&conn->sessions);
-            if (session_count > 0) {
-                sessions = malloc(sizeof(wtf_session*) * session_count);
-                if (sessions) {
-                    size_t session_index = 0;
-                    for (session_map_itr itr = session_map_first(&conn->sessions);
-                         !session_map_is_end(itr) && session_index < session_count;
-                         itr = session_map_next(itr)) {
-                        wtf_session_add_ref(itr.data->val);
-                        sessions[session_index++] = itr.data->val;
-                    }
-                    session_count = session_index;
-                } else {
-                    session_count = 0;
-                }
-            }
-            mtx_unlock(&conn->sessions_mutex);
-
-            for (size_t i = 0; i < session_count; i++) {
-                wtf_session* session = sessions[i];
-                mtx_lock(&session->streams_mutex);
-                uint64_t uni_limit = session->outgoing_streams_uni + uni_available;
-                if (uni_limit > session->remote_max_streams_uni) {
-                    session->remote_max_streams_uni = uni_limit;
-                }
-                uint64_t bidi_limit = session->outgoing_streams_bidi + bidi_available;
-                if (bidi_limit > session->remote_max_streams_bidi) {
-                    session->remote_max_streams_bidi = bidi_limit;
-                }
-                mtx_unlock(&session->streams_mutex);
-                wtf_session_release(session);
-            }
-            free(sessions);
+        case QUIC_CONNECTION_EVENT_STREAMS_AVAILABLE:
             return QUIC_STATUS_SUCCESS;
-        }
 
         default:
             WTF_LOG_DEBUG(conn->context, "conn", "Unhandled connection event: %d",

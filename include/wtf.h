@@ -64,7 +64,8 @@ typedef enum {
     WTF_ERROR_TIMEOUT,
     WTF_ERROR_TLS_HANDSHAKE_FAILED,
     WTF_ERROR_PROTOCOL_VIOLATION,
-    WTF_ERROR_FLOW_CONTROL
+    WTF_ERROR_FLOW_CONTROL,
+    WTF_ERROR_NOT_SUPPORTED
 } wtf_result_t;
 
 //! Logging levels for debugging and monitoring
@@ -141,10 +142,11 @@ typedef enum {
 } wtf_congestion_control_t;
 
 //! Stream send-buffering preference.
-//! DEFAULT leaves the transport default in place (msquic buffers sends and
-//! signals completion early). DISABLED makes the transport hold the caller's
-//! buffer until the data is actually transmitted, so send-complete reflects
-//! real flow-control progress and the application can apply backpressure.
+//! ENABLED allows send completion after the transport copies the payload.
+//! DISABLED delays completion until the transport releases the queued data,
+//! allowing the application to bound outstanding sends. DEFAULT uses the
+//! transport default. Completion always permits buffer reuse; it does not
+//! confirm delivery to the peer application.
 typedef enum {
     WTF_SEND_BUFFERING_DEFAULT = 0,
     WTF_SEND_BUFFERING_ENABLED = 1,
@@ -189,7 +191,10 @@ typedef enum {
     WTF_DATAGRAM_SEND_ACKNOWLEDGED_SPURIOUS = 5,
     //! The queued datagram was canceled; either because the connection was shutdown or the peer did
     //! not negotiate the feature.
-    WTF_DATAGRAM_SEND_CANCELED = 6
+    WTF_DATAGRAM_SEND_CANCELED = 6,
+    //! Network.framework processed the send; acknowledgment/loss is unavailable.
+    //! Final state: the payload may be released, without inferring peer receipt.
+    WTF_DATAGRAM_SEND_UNTRACKED = 7
 } wtf_datagram_send_state_t;
 
 #define WTF_DATAGRAM_SEND_STATE_IS_FINAL(State) ((State) >= WTF_DATAGRAM_SEND_LOST_DISCARDED)
@@ -242,7 +247,7 @@ typedef enum {
 //! Stream event types for callback notifications
 typedef enum {
     WTF_STREAM_EVENT_DATA_RECEIVED,  //! Data received on stream
-    WTF_STREAM_EVENT_SEND_COMPLETE,  //! Send operation completed
+    WTF_STREAM_EVENT_SEND_COMPLETE,  //! Payload may be reused; does not confirm peer receipt
     WTF_STREAM_EVENT_PEER_CLOSED,    //! Peer closed their end of stream
     WTF_STREAM_EVENT_CLOSED,         //! Stream fully closed
     WTF_STREAM_EVENT_ABORTED         //! Stream was aborted with error
@@ -471,7 +476,7 @@ typedef struct {
 
     // Features
     bool enable_0rtt;       //! Enable 0-RTT connections
-    bool enable_migration;  //! Enable connection migration
+    bool enable_migration;  //! MsQuic migration toggle; Network.framework manages migration automatically
     wtf_send_buffering_t send_buffering;  //! Stream send-buffering mode; 0 uses transport default
 
     // Callbacks
@@ -512,8 +517,8 @@ typedef struct {
     uint32_t idle_timeout_ms;       //! Idle timeout in milliseconds
     uint32_t handshake_timeout_ms;  //! Handshake/session setup timeout in milliseconds
 
-    bool enable_0rtt;       //! Enable 0-RTT transport use when MsQuic has tickets
-    bool enable_migration;  //! Enable connection migration
+    bool enable_0rtt;       //! Allow 0-RTT transport use when cached tickets are available
+    bool enable_migration;  //! MsQuic migration toggle; Network.framework manages migration automatically
     wtf_send_buffering_t send_buffering;  //! Stream send-buffering mode; 0 uses transport default
 
     wtf_session_callback_t session_callback;  //! Session event callback

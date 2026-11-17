@@ -266,6 +266,11 @@ bool wtf_settings_decode_frame(wtf_connection* conn, const uint8_t* data, size_t
 bool wtf_settings_encode_frame(wtf_connection* conn, uint8_t* buffer, size_t buffer_size,
                                size_t* frame_length)
 {
+#ifdef WTF_QUIC_BACKEND_NETWORK
+    if (conn && conn->requested_webtransport_draft == WTF_WEBTRANSPORT_DRAFT_15 && !conn->reliable_reset_negotiated) {
+        return false;
+    }
+#endif
     if (!conn || !buffer || !frame_length)
         return false;
 
@@ -291,6 +296,9 @@ bool wtf_settings_encode_frame(wtf_connection* conn, uint8_t* buffer, size_t buf
 
     bool draft_auto = conn->requested_webtransport_draft == WTF_WEBTRANSPORT_DRAFT_AUTO;
     bool draft15 = draft_auto || conn->requested_webtransport_draft == WTF_WEBTRANSPORT_DRAFT_15;
+#ifdef WTF_QUIC_BACKEND_NETWORK
+    draft15 = draft15 && conn->reliable_reset_negotiated;
+#endif
     bool draft07 = draft_auto || conn->requested_webtransport_draft == WTF_WEBTRANSPORT_DRAFT_07;
     bool draft02 = draft_auto || conn->requested_webtransport_draft == WTF_WEBTRANSPORT_DRAFT_02;
 

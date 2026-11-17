@@ -30,6 +30,7 @@ typedef struct {
     atomic_int done_echoed;
     atomic_int uni_streams_completed;
     atomic_int failures;
+    _Atomic(wtf_stream_t*) pending_done;
     uint32_t expected_uni_streams;
     size_t expected_uni_bytes;
     bool verbose;
@@ -114,6 +115,25 @@ static send_mark_t classify_control_message(const stream_context_t* stream_ctx)
     return SEND_MARK_NONE;
 }
 
+/* The final echo is an application barrier across independent QUIC streams. */
+static void browser_interop_finish_done_echo(interop_state_t* state)
+{
+    if (atomic_load(&state->uni_streams_completed) < (int)state->expected_uni_streams) {
+        return;
+    }
+    wtf_stream_t* stream = atomic_exchange(&state->pending_done, NULL);
+    if (!stream) {
+        return;
+    }
+    wtf_result_t result = wtf_stream_close(stream);
+    if (result != WTF_SUCCESS) {
+        fail_interop(state, wtf_result_to_string(result));
+    } else {
+        atomic_store(&state->done_echoed, 1);
+    }
+    wtf_stream_unref(stream);
+}
+
 static void stream_callback(const wtf_stream_event_t* event)
 {
     if (!event || !event->stream) {
@@ -183,7 +203,6 @@ static void stream_callback(const wtf_stream_event_t* event)
 
         case WTF_STREAM_EVENT_ABORTED:
             fail_interop(state, "stream aborted");
-            free(stream_ctx);
             break;
 
         case WTF_STREAM_EVENT_PEER_CLOSED:
@@ -202,6 +221,7 @@ static void stream_callback(const wtf_stream_event_t* event)
                     return;
                 }
                 atomic_fetch_add(&state->uni_streams_completed, 1);
+                browser_interop_finish_done_echo(state);
                 if (state->verbose) {
                     fprintf(stderr, "browser interop: completed uni stream %d/%u\n",
                             atomic_load(&state->uni_streams_completed),
@@ -211,6 +231,12 @@ static void stream_callback(const wtf_stream_event_t* event)
             }
 
             send_mark_t mark = classify_control_message(stream_ctx);
+            if (state && mark == SEND_MARK_DONE) {
+                wtf_stream_ref(event->stream);
+                atomic_store(&state->pending_done, event->stream);
+                browser_interop_finish_done_echo(state);
+                break;
+            }
             wtf_result_t result = wtf_stream_close(event->stream);
             if (result != WTF_SUCCESS) {
                 fail_interop(state, wtf_result_to_string(result));
@@ -218,8 +244,6 @@ static void stream_callback(const wtf_stream_event_t* event)
             }
             if (state && mark == SEND_MARK_BIDI) {
                 atomic_store(&state->bidi_echoed, 1);
-            } else if (state && mark == SEND_MARK_DONE) {
-                atomic_store(&state->done_echoed, 1);
             }
             break;
         default:
@@ -494,6 +518,10 @@ int main(int argc, char** argv)
                 atomic_load(&state.failures));
     }
 
+    wtf_stream_t* pending_done = atomic_exchange(&state.pending_done, NULL);
+    if (pending_done) {
+        wtf_stream_unref(pending_done);
+    }
     wtf_server_stop(server);
     wtf_server_destroy(server);
     wtf_context_destroy(context);

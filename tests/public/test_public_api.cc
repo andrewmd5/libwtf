@@ -284,3 +284,35 @@ TEST(PublicApiSurface, StreamNullContracts)
     wtf_stream_set_callback(nullptr, nullptr);
     wtf_stream_set_context(nullptr, nullptr);
 }
+
+#ifdef WTF_QUIC_BACKEND_NETWORK
+TEST_F(ContextFixture, NetworkSupportsDelayedCompletionAndRejectsUnsupportedCongestionMode)
+{
+    wtf_client_config_t config = {};
+    config.url = "https://127.0.0.1:4433/";
+    config.draft = WTF_WEBTRANSPORT_DRAFT_15;
+    wtf_client_t* client = nullptr;
+    wtf_result_t draft15_result = wtf_client_create(context_, &config, &client);
+    if (draft15_result == WTF_SUCCESS) {
+        wtf_client_destroy(client);
+        client = nullptr;
+    } else {
+        EXPECT_EQ(WTF_ERROR_NOT_SUPPORTED, draft15_result);
+    }
+
+    config.draft = WTF_WEBTRANSPORT_DRAFT_07;
+    config.send_buffering = WTF_SEND_BUFFERING_DISABLED;
+    ASSERT_EQ(WTF_SUCCESS, wtf_client_create(context_, &config, &client));
+    wtf_client_destroy(client);
+    client = nullptr;
+    config.send_buffering = WTF_SEND_BUFFERING_DEFAULT;
+    config.congestion_control = WTF_CONGESTION_CONTROL_THROUGHPUT;
+    EXPECT_EQ(WTF_ERROR_NOT_SUPPORTED, wtf_client_create(context_, &config, &client));
+    EXPECT_EQ(nullptr, client);
+    config.congestion_control = WTF_CONGESTION_CONTROL_DEFAULT;
+    config.enable_migration = true;
+    ASSERT_EQ(WTF_SUCCESS, wtf_client_create(context_, &config, &client));
+    wtf_client_destroy(client);
+    EXPECT_TRUE(WTF_DATAGRAM_SEND_STATE_IS_FINAL(WTF_DATAGRAM_SEND_UNTRACKED));
+}
+#endif

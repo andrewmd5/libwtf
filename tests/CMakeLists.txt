@@ -26,6 +26,25 @@ if(WTF_BUILD_CPP)
         PROPERTIES LABELS "integration;cpp" TIMEOUT 15)
 endif()
 
+if(APPLE)
+    add_executable(wtf_backend_roundtrip network/roundtrip.c)
+    target_link_libraries(wtf_backend_roundtrip PRIVATE wtf)
+endif()
+
+if(WTF_QUIC_BACKEND STREQUAL "network")
+    set(WTF_NETWORK_TEST_SOURCES ${WTF_BACKEND_SOURCES})
+    list(TRANSFORM WTF_NETWORK_TEST_SOURCES PREPEND "${PROJECT_SOURCE_DIR}/")
+    add_executable(wtf_network_backend_tests network/backend.c ${WTF_NETWORK_TEST_SOURCES}
+        "${PROJECT_SOURCE_DIR}/src/log.c" "${PROJECT_SOURCE_DIR}/src/cert.c")
+    target_include_directories(wtf_network_backend_tests PRIVATE $<TARGET_PROPERTY:wtf,INCLUDE_DIRECTORIES>)
+    target_compile_options(wtf_network_backend_tests PRIVATE -fblocks)
+    target_link_libraries(wtf_network_backend_tests PRIVATE ${MSQUIC_LIBRARIES} ${PLATFORM_LIBS})
+    add_test(NAME wtf_network_backend_tests COMMAND wtf_network_backend_tests
+        "${PROJECT_SOURCE_DIR}/certs/localhost.crt"
+        "${PROJECT_SOURCE_DIR}/certs/localhost.key")
+    set_tests_properties(wtf_network_backend_tests PROPERTIES LABELS "integration;network" TIMEOUT 15)
+endif()
+
 # Compile the implementation into this executable to exercise internal ownership
 # with a mock MsQuic API, without exposing private symbols from the shared library.
 set(WTF_REGRESSION_SOURCES)
@@ -40,6 +59,11 @@ add_executable(wtf_regression_tests
 )
 target_include_directories(wtf_regression_tests PRIVATE $<TARGET_PROPERTY:wtf,INCLUDE_DIRECTORIES>)
 target_compile_definitions(wtf_regression_tests PRIVATE WTF_EXPORTS)
+if(WTF_QUIC_BACKEND STREQUAL "network")
+    target_compile_options(wtf_regression_tests PRIVATE $<$<COMPILE_LANGUAGE:C>:-fblocks>)
+    set_source_files_properties("${PROJECT_SOURCE_DIR}/src/quic/network_credentials.c"
+        PROPERTIES COMPILE_OPTIONS "-Wno-deprecated-declarations")
+endif()
 if(WTF_ENABLE_LOGGING)
     target_compile_definitions(wtf_regression_tests PRIVATE WTF_ENABLE_LOGGING=1)
 endif()
@@ -136,7 +160,7 @@ if(WTF_ENABLE_COVERAGE)
 endif()
 
 add_test(NAME wtf_e2e_tests COMMAND wtf_e2e_tests)
-set_tests_properties(wtf_e2e_tests PROPERTIES LABELS "integration;e2e")
+set_tests_properties(wtf_e2e_tests PROPERTIES LABELS "integration;e2e" TIMEOUT 30)
 
 add_executable(wtf_browser_interop_server browser_chrome/server.c)
 

@@ -57,6 +57,8 @@ const char* wtf_result_to_string(wtf_result_t result)
             return "Protocol violation";
         case WTF_ERROR_FLOW_CONTROL:
             return "Flow control error";
+        case WTF_ERROR_NOT_SUPPORTED:
+            return "Not supported by the QUIC backend";
         default:
             return "Unknown error";
     }
@@ -72,6 +74,8 @@ wtf_result_t wtf_quic_status_to_result(QUIC_STATUS status)
     }
 
     switch (status) {
+        case QUIC_STATUS_NOT_SUPPORTED:
+            return WTF_ERROR_NOT_SUPPORTED;
         case QUIC_STATUS_SUCCESS:
             return WTF_SUCCESS;
         case QUIC_STATUS_INVALID_PARAMETER:

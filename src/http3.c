@@ -278,6 +278,7 @@ wtf_http3_stream* wtf_http3_stream_create(wtf_connection* conn, HQUIC quic_strea
     stream->id = stream_id;
     stream->quic_stream = quic_stream;
     stream->connection = conn;
+    stream->type = UINT64_MAX;
     stream->state = WTF_INTERNAL_STREAM_STATE_IDLE;
     wtf_connection_add_ref(conn);
 
@@ -2183,6 +2184,11 @@ static wtf_result_t wtf_session_establish(wtf_http3_stream* stream,
     }
 
     wtf_session* session = stream->webtransport_session;
+    mtx_lock(&session->streams_mutex);
+    session->remote_max_streams_bidi = stream->connection->peer_settings.wt_initial_max_streams_bidi;
+    session->remote_max_streams_uni = stream->connection->peer_settings.wt_initial_max_streams_uni;
+    session->remote_max_data = stream->connection->peer_settings.wt_initial_max_data;
+    mtx_unlock(&session->streams_mutex);
     session->state = WTF_SESSION_CONNECTED;
     session->id = stream->id;
 
@@ -2362,8 +2368,9 @@ cleanup:
 static bool wtf_http3_parse_uni_stream_type(wtf_http3_stream* stream, const uint8_t* data,
                                             size_t length, uint32_t* offset)
 {
-    if (stream->type != 0)
+    if (stream->type != UINT64_MAX) {
         return true;
+    }
 
     wtf_varint_t stream_type;
     size_t type_offset = *offset;
