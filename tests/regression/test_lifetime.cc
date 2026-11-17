@@ -6,6 +6,7 @@
 extern "C" {
 #include "conn.h"
 #include "http3.h"
+#include "qpack.h"
 #include "session.h"
 #include "stream.h"
 #include "utils.h"
@@ -118,6 +119,7 @@ protected:
         auto* stream = wtf_stream_create(session, next_handle * 4, WTF_STREAM_BIDIRECTIONAL);
         stream->quic_stream = Handle();
         stream->state = WTF_INTERNAL_STREAM_STATE_OPEN;
+        stream->user_context = session->user_context;
         children.push_back(stream);
         wtf_test_echo_stream(session, stream);
         return stream;
@@ -471,6 +473,105 @@ TEST_F(LifetimeRegression, TinyEchoSendsCannotBypassAllocationBudget)
     EXPECT_EQ(WTF_ERROR_FLOW_CONTROL, wtf_test_echo_send(stream, &data, 1));
     CompleteSends();
     EXPECT_EQ(WTF_SUCCESS, wtf_test_echo_send(stream, &data, 1));
+}
+
+TEST_F(LifetimeRegression, QpackEncoderStreamCanArriveBeforeSettings)
+{
+    const uint8_t capacity_and_insert[] = {0x3f, 0x61, 0x41, 'x', 0x01, 'y'};
+    ASSERT_TRUE(wtf_qpack_process_encoder(&context, &conn->qpack,
+        capacity_and_insert, sizeof(capacity_and_insert)));
+
+    conn->qpack.peer_max_table_capacity = 0;
+    conn->qpack.peer_blocked_streams = 0;
+    ASSERT_TRUE(wtf_qpack_init_encoder(&context, &conn->qpack));
+
+    const uint8_t duplicate[] = {0x00};
+    EXPECT_TRUE(wtf_qpack_process_encoder(&context, &conn->qpack, duplicate, sizeof(duplicate)));
+}
+
+TEST_F(LifetimeRegression, ControlStreamTypeIsNotParsedAgainAfterAReceiveBoundary)
+{
+    api.GetParam = [](HQUIC, uint32_t parameter, uint32_t* size, void* value) {
+        if (parameter != QUIC_PARAM_STREAM_ID || *size < sizeof(uint64_t)) {
+            return QUIC_STATUS_NOT_SUPPORTED;
+        }
+        *static_cast<uint64_t*>(value) = 3;
+        *size = sizeof(uint64_t);
+        return QUIC_STATUS_SUCCESS;
+    };
+    auto* stream = wtf_http3_stream_create(conn, Handle(), 3);
+    wtf_http3_stream_add_ref(stream);
+    connects.push_back(stream);
+    uint8_t control_type = WTF_STREAM_TYPE_CONTROL;
+    QUIC_BUFFER buffer = {1, &control_type};
+    QUIC_STREAM_EVENT receive = {};
+    receive.Type = QUIC_STREAM_EVENT_RECEIVE;
+    receive.RECEIVE.Buffers = &buffer;
+    receive.RECEIVE.BufferCount = 1;
+    receive.RECEIVE.TotalBufferLength = 1;
+    wtf_http3_stream_callback(stream->quic_stream, stream, &receive);
+    ASSERT_EQ(WTF_STREAM_TYPE_CONTROL, stream->type);
+
+    uint8_t extension_frame[] = {0x21, 0x00};
+    buffer = {sizeof(extension_frame), extension_frame};
+    receive.RECEIVE.TotalBufferLength = sizeof(extension_frame);
+    wtf_http3_stream_callback(stream->quic_stream, stream, &receive);
+    EXPECT_EQ(WTF_STREAM_TYPE_CONTROL, stream->type);
+    EXPECT_EQ(stream, conn->peer_control_stream);
+}
+
+TEST_F(LifetimeRegression, QuicStreamAvailabilityDoesNotGrantWebTransportCredit)
+{
+    auto* session = Session();
+    conn->webtransport_flow_control_enabled = true;
+    session->remote_max_streams_bidi = 3;
+    session->remote_max_streams_uni = 2;
+    QUIC_CONNECTION_EVENT available = {};
+    available.Type = QUIC_CONNECTION_EVENT_STREAMS_AVAILABLE;
+    available.STREAMS_AVAILABLE.BidirectionalCount = 64;
+    available.STREAMS_AVAILABLE.UnidirectionalCount = 64;
+    wtf_connection_callback(nullptr, conn, &available);
+    ASSERT_EQ(3u, session->remote_max_streams_bidi);
+    ASSERT_EQ(2u, session->remote_max_streams_uni);
+
+    uint8_t limit = 4;
+    wtf_capsule update = {WTF_CAPSULE_WT_MAX_STREAMS_BIDI, 1, &limit};
+    EXPECT_TRUE(wtf_session_process_capsule(session, &update));
+    EXPECT_EQ(4u, session->remote_max_streams_bidi);
+}
+
+TEST_F(LifetimeRegression, ClientSessionUsesPeerCreditReceivedDuringHandshake)
+{
+    auto* session = Session();
+    auto* stream = connects.back();
+    session->state = WTF_SESSION_HANDSHAKING;
+    conn->peer_settings.wt_initial_max_streams_bidi = 3;
+    conn->peer_settings.wt_initial_max_streams_uni = 2;
+    conn->peer_settings.wt_initial_max_data = 4096;
+    ASSERT_TRUE(wtf_qpack_init_encoder(&context, &conn->qpack));
+    wtf_client client = {};
+    conn->role = WTF_ENDPOINT_CLIENT;
+    conn->client = &client;
+    stream->flags = static_cast<wtf_http3_stream_flags_t>(WTF_HTTP3_STREAM_FLAG_CLIENT_CONNECT);
+    api.GetParam = [](HQUIC, uint32_t, uint32_t* size, void* value) {
+        *static_cast<uint64_t*>(value) = 8;
+        *size = sizeof(uint64_t);
+        return QUIC_STATUS_SUCCESS;
+    };
+    uint8_t response[] = {0x01, 0x03, 0x00, 0x00, 0xd9};
+    QUIC_BUFFER buffer = {sizeof(response), response};
+    QUIC_STREAM_EVENT receive = {};
+    receive.Type = QUIC_STREAM_EVENT_RECEIVE;
+    receive.RECEIVE.Buffers = &buffer;
+    receive.RECEIVE.BufferCount = 1;
+    receive.RECEIVE.TotalBufferLength = sizeof(response);
+    wtf_http3_stream_callback(stream->quic_stream, stream, &receive);
+    EXPECT_EQ(WTF_SESSION_CONNECTED, session->state);
+    EXPECT_EQ(3u, session->remote_max_streams_bidi);
+    EXPECT_EQ(2u, session->remote_max_streams_uni);
+    EXPECT_EQ(4096u, session->remote_max_data);
+    conn->client = nullptr;
+    conn->role = WTF_ENDPOINT_SERVER;
 }
 
 } // namespace

@@ -8,10 +8,11 @@ if(WIN32)
 else()
     find_dependency(Threads)
     
-    # Try to find MsQuic
-    find_dependency(PkgConfig)
-    if(PkgConfig_FOUND)
-        pkg_check_modules(MsQuic REQUIRED libmsquic)
+    if("@WTF_QUIC_BACKEND@" STREQUAL "msquic")
+        find_dependency(PkgConfig)
+        if(PkgConfig_FOUND)
+            pkg_check_modules(MsQuic REQUIRED libmsquic)
+        endif()
     endif()
 endif()
 

@@ -7,6 +7,9 @@
 #include "log.h"
 #include "session.h"
 #include "utils.h"
+#ifdef WTF_QUIC_BACKEND_NETWORK
+    #include "quic/network.h"
+#endif
 
 static bool wtf_client_valid_draft(wtf_webtransport_draft_t draft)
 {
@@ -233,6 +236,14 @@ static wtf_result_t wtf_copy_client_headers(wtf_client* client, const wtf_client
 
 static wtf_result_t wtf_copy_client_config(wtf_client* client, const wtf_client_config_t* config)
 {
+#ifdef WTF_QUIC_BACKEND_NETWORK
+    if (config && config->draft == WTF_WEBTRANSPORT_DRAFT_15 && !wtf_network_supports_reliable_reset()) {
+        return WTF_ERROR_NOT_SUPPORTED;
+    }
+    if (config && config->enable_0rtt && !wtf_network_supports_early_data()) {
+        return WTF_ERROR_NOT_SUPPORTED;
+    }
+#endif
     if (!client || !config || !config->url || !wtf_client_valid_draft(config->draft)
         || !wtf_client_valid_congestion_control(config->congestion_control)) {
         return WTF_ERROR_INVALID_PARAMETER;
@@ -481,6 +492,14 @@ wtf_result_t wtf_client_create(wtf_context_t* context, const wtf_client_config_t
         ? config->handshake_timeout_ms
         : WTF_DEFAULT_HANDSHAKE_TIMEOUT_MS;
     settings.IsSet.HandshakeIdleTimeoutMs = TRUE;
+#ifdef WTF_QUIC_BACKEND_NETWORK
+    settings.ServerResumptionLevel = QUIC_SERVER_RESUME_ONLY;
+    if (config->enable_0rtt) {
+        settings.ServerResumptionLevel = QUIC_SERVER_RESUME_AND_ZERORTT;
+    }
+    settings.IsSet.ServerResumptionLevel = TRUE;
+#endif
+
     settings.DatagramReceiveEnabled = TRUE;
     settings.IsSet.DatagramReceiveEnabled = TRUE;
 
@@ -511,8 +530,10 @@ wtf_result_t wtf_client_create(wtf_context_t* context, const wtf_client_config_t
     }
     settings.PacingEnabled = TRUE;
     settings.IsSet.PacingEnabled = TRUE;
+#ifndef WTF_QUIC_BACKEND_NETWORK
     settings.MigrationEnabled = config->enable_migration ? TRUE : FALSE;
     settings.IsSet.MigrationEnabled = TRUE;
+#endif
     if (config->congestion_control == WTF_CONGESTION_CONTROL_THROUGHPUT) {
 #ifdef QUIC_API_ENABLE_PREVIEW_FEATURES
         settings.CongestionControlAlgorithm = QUIC_CONGESTION_CONTROL_ALGORITHM_BBR;
@@ -591,6 +612,12 @@ wtf_result_t wtf_client_create(wtf_context_t* context, const wtf_client_config_t
         result = wtf_quic_status_to_result(status);
         goto cleanup_configuration;
     }
+#ifdef WTF_QUIC_BACKEND_NETWORK
+    if (cli->pinned_server_certificate_present) {
+        wtf_network_configuration_set_certificate_pin(
+            cli->configuration, cli->pinned_server_certificate_sha256);
+    }
+#endif
 
     mtx_lock(&ctx->mutex);
     ctx->client = cli;

@@ -10,6 +10,12 @@ wtf_result_t wtf_context_create(const wtf_context_config_t* config, wtf_context_
     if (!config || !context) {
         return WTF_ERROR_INVALID_PARAMETER;
     }
+#ifdef WTF_QUIC_BACKEND_NETWORK
+    if (config->worker_thread_count || config->enable_load_balancing || config->disable_encryption
+        || config->execution_profile != WTF_EXECUTION_PROFILE_LOW_LATENCY) {
+        return WTF_ERROR_NOT_SUPPORTED;
+    }
+#endif
 
     wtf_context_t* ctx = malloc(sizeof(wtf_context_t));
     if (!ctx) {
@@ -55,6 +61,7 @@ wtf_result_t wtf_context_create(const wtf_context_config_t* config, wtf_context_
         free(ctx);
         return wtf_quic_status_to_result(status);
     }
+    ctx->quic_api->SetContext(ctx->registration, ctx);
 
     WTF_LOG_INFO(ctx, "context", "WebTransport context created successfully");
 

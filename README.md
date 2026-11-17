@@ -1,6 +1,7 @@
 # libwtf
 
-C WebTransport over HTTP/3, built on [MsQuic](https://github.com/microsoft/msquic).
+C WebTransport over HTTP/3, built on [MsQuic](https://github.com/microsoft/msquic),
+with an optional native macOS Network.framework backend.
 
 Supports server and native client use, streams, datagrams, pooled sessions, and draft-15,
 draft-07, and draft-02 negotiation.

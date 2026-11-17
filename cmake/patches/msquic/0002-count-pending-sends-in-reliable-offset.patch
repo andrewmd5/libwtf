@@ -1,0 +1,43 @@
+Subject: [PATCH] Count pending API sends when validating a reliable offset
+
+StreamSend queues buffered sends even when called on the worker thread,
+while SetParam runs inline there. Include those accepted sends when
+validating the offset so a callback can protect a header immediately.
+
+diff --git a/src/core/stream.c b/src/core/stream.c
+index d3988dae3..abd5e1174 100644
+--- a/src/core/stream.c
++++ b/src/core/stream.c
+@@ -707,12 +707,30 @@ QuicStreamParamSet(
+             break;
+         }
+ 
+-        if (!Stream->Connection->State.ReliableResetStreamNegotiated ||
+-            *(uint64_t*)Buffer > Stream->QueuedSendOffset) {
++        if (!Stream->Connection->State.ReliableResetStreamNegotiated) {
+             Status = QUIC_STATUS_INVALID_STATE;
+             break;
+         }
+ 
++        if (*(uint64_t*)Buffer > Stream->QueuedSendOffset) {
++            uint64_t RemainingOffset = *(uint64_t*)Buffer - Stream->QueuedSendOffset;
++            CxPlatDispatchLockAcquire(&Stream->ApiSendRequestLock);
++            for (QUIC_SEND_REQUEST* Request = Stream->ApiSendRequests;
++                 Request != NULL;
++                 Request = Request->Next) {
++                if (Request->TotalLength >= RemainingOffset) {
++                    RemainingOffset = 0;
++                    break;
++                }
++                RemainingOffset -= Request->TotalLength;
++            }
++            CxPlatDispatchLockRelease(&Stream->ApiSendRequestLock);
++            if (RemainingOffset != 0) {
++                Status = QUIC_STATUS_INVALID_STATE;
++                break;
++            }
++        }
++
+         if (Stream->Flags.LocalCloseReset) {
+             Status = QUIC_STATUS_INVALID_STATE;
+             break;

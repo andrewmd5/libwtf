@@ -14,6 +14,7 @@ wtf_connection MakeConnection(wtf_webtransport_draft_t draft = WTF_WEBTRANSPORT_
 {
     wtf_connection conn = {};
     conn.requested_webtransport_draft = draft;
+    conn.reliable_reset_negotiated = true;
     wtf_settings_init(&conn.local_settings);
     conn.local_settings.qpack_max_table_capacity = WTF_QPACK_DYNAMIC_TABLE_SIZE;
     conn.local_settings.qpack_blocked_streams = WTF_QPACK_MAX_BLOCKED_STREAMS;

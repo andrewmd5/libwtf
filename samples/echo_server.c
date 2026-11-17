@@ -610,7 +610,8 @@ void session_callback(const wtf_session_event_t* event)
             // Get or create stream context
             stream_context_t* stream_ctx = (stream_context_t*)wtf_stream_get_context(
                 event->stream_opened.stream);
-            if (!stream_ctx) {
+            if (!stream_ctx || (void*)stream_ctx == (void*)session_ctx) {
+                wtf_stream_set_context(event->stream_opened.stream, NULL);
                 stream_ctx = calloc(1, sizeof(stream_context_t));
                 if (stream_ctx) {
                     echo_stream_context_init(stream_ctx, event->session);
@@ -859,8 +860,6 @@ int main(int argc, char* argv[])
     wtf_context_config_t context_config = {0};
     context_config.log_level = verbose ? WTF_LOG_LEVEL_TRACE : WTF_LOG_LEVEL_INFO;
     context_config.log_callback = log_callback;
-    context_config.worker_thread_count = 4;
-    context_config.enable_load_balancing = true;
 
     wtf_result_t status = wtf_context_create(&context_config, &g_context);
     if (status != WTF_SUCCESS) {
