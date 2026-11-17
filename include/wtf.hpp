@@ -75,7 +75,8 @@ enum class SendBuffering {
     kDisabled = WTF_SEND_BUFFERING_DISABLED,
 };
 
-//! Transport congestion-control preference; support depends on the backend.
+//! Transport congestion-control preference. Network.framework accepts kDefault
+//! and rejects explicit presets with WTF_ERROR_NOT_SUPPORTED.
 enum class CongestionControl {
     kDefault = WTF_CONGESTION_CONTROL_DEFAULT,
     kThroughput = WTF_CONGESTION_CONTROL_THROUGHPUT,
@@ -163,8 +164,10 @@ struct SendCompletion {
 };
 
 //! A datagram send state change. Only a final state permits payload reuse.
+//! Network.framework reports WTF_DATAGRAM_SEND_UNTRACKED as its final state;
+//! acknowledgment and loss information are unavailable.
 struct DatagramCompletion {
-    wtf_datagram_send_state_t state;  //!< Transport acknowledgment/loss state.
+    wtf_datagram_send_state_t state;  //!< Send state reported by the backend.
     void* context;                    //!< Token supplied in DatagramOptions.
     //! Return whether tracking is finished and the payload can be released.
     [[nodiscard]] bool final() const noexcept {
@@ -209,9 +212,9 @@ struct TransportOptions {
     std::optional<std::chrono::milliseconds> idle_timeout = std::nullopt;
     //! Handshake/session setup deadline.
     std::optional<std::chrono::milliseconds> handshake_timeout = std::nullopt;
-    //! Permit early transport data on resumed connections.
+    //! Permit early transport data when a cached resumption ticket is available.
     bool enable_0rtt = false;
-    //! Request migration where the backend exposes a toggle.
+    //! Toggle MsQuic migration. Network.framework manages migration automatically.
     bool enable_migration = false;
     //! Send completion timing preference.
     SendBuffering send_buffering = SendBuffering::kDefault;

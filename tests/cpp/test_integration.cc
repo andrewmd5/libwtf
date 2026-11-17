@@ -32,6 +32,8 @@ TEST(CppIntegration, EchoStreamsAndDatagramsWithOwnedSends) {
         },
         .transport = {
             .draft = wtf::Draft::k07,
+            .enable_migration = true,
+            .send_buffering = wtf::SendBuffering::kDisabled,
         },
     };
     wtf::SessionHandlers server_handlers{
@@ -65,12 +67,15 @@ TEST(CppIntegration, EchoStreamsAndDatagramsWithOwnedSends) {
     std::binary_semaphore stream_echo(0);
     std::binary_semaphore datagram_echo(0);
     std::binary_semaphore sent(0);
+    std::binary_semaphore datagram_sent(0);
     std::string received;
 
     wtf::ClientOptions client_options{
         .url = "https://127.0.0.1:44445/",
         .transport = {
             .draft = wtf::Draft::k07,
+            .enable_migration = true,
+            .send_buffering = wtf::SendBuffering::kDisabled,
         },
         .skip_certificate_validation = true,
     };
@@ -99,7 +104,18 @@ TEST(CppIntegration, EchoStreamsAndDatagramsWithOwnedSends) {
                     }
                 },
             }));
-            static_cast<void>(session.SendDatagram(wtf::ByteBuffer(32, std::byte{0x2a})));
+            static_cast<void>(session.SendDatagram(
+                wtf::ByteBuffer(32, std::byte{0x2a}),
+                {
+                    .on_complete = [&](wtf::DatagramCompletion completion) noexcept {
+                        EXPECT_TRUE(completion.final());
+#ifdef WTF_QUIC_BACKEND_NETWORK
+                        EXPECT_EQ(WTF_DATAGRAM_SEND_UNTRACKED, completion.state);
+#endif
+                        datagram_sent.release();
+                    },
+                }
+            ));
         },
         .on_datagram = [&](wtf::SessionView, wtf::Bytes data) noexcept {
             if (data.size() == 32 && data.front() == std::byte{0x2a}) {
@@ -118,5 +134,6 @@ TEST(CppIntegration, EchoStreamsAndDatagramsWithOwnedSends) {
     ASSERT_TRUE(stream_echo.try_acquire_for(5s));
     ASSERT_TRUE(datagram_echo.try_acquire_for(5s));
     ASSERT_TRUE(sent.try_acquire_for(5s));
+    ASSERT_TRUE(datagram_sent.try_acquire_for(5s));
     EXPECT_EQ(std::string(256 * 1024, '\x5a'), received);
 }

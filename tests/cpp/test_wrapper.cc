@@ -415,6 +415,45 @@ TEST_F(CppWrapper, DatagramOwnershipSurvivesIntermediateStates) {
     EXPECT_EQ(1u, completions);
 }
 
+TEST_F(CppWrapper, UntrackedDatagramCompletionReleasesOwnedSendState) {
+    auto context = Context();
+    unsigned states = 0;
+    unsigned completions = 0;
+    void* token = &context;
+    auto client = Client(context, {
+        .on_datagram_send_state = [&](wtf::SessionView, wtf::DatagramCompletion event) noexcept {
+            EXPECT_EQ(WTF_DATAGRAM_SEND_UNTRACKED, event.state);
+            EXPECT_TRUE(event.final());
+            EXPECT_EQ(token, event.context);
+            ++states;
+        },
+    });
+    auto session = client.Open();
+    auto lifetime = std::make_shared<int>(1);
+    std::weak_ptr weak = lifetime;
+    ASSERT_TRUE(session->SendDatagram(wtf::ByteBuffer(32, std::byte{0x5a}), {
+        .context = token,
+        .on_complete = [keep = std::move(lifetime), token, &completions](
+            wtf::DatagramCompletion event
+        ) noexcept {
+            EXPECT_EQ(WTF_DATAGRAM_SEND_UNTRACKED, event.state);
+            EXPECT_TRUE(event.final());
+            EXPECT_EQ(token, event.context);
+            ++completions;
+        },
+    }));
+    EXPECT_FALSE(weak.expired());
+    ASSERT_EQ(1u, mock.datagrams.size());
+    EXPECT_EQ(0x5a, mock.datagrams[0].buffers[0].data[31]);
+    CompleteDatagram(WTF_DATAGRAM_SEND_UNTRACKED);
+    EXPECT_TRUE(weak.expired());
+    EXPECT_TRUE(mock.datagrams.empty());
+    EXPECT_EQ(1u, states);
+    EXPECT_EQ(1u, completions);
+    client.Reset();
+    EXPECT_EQ(1u, completions);
+}
+
 TEST_F(CppWrapper, ShutdownCancelsOwnedSendsWhenNativeCallbacksAreSuppressed) {
     auto context = Context();
     unsigned cancelled = 0;
@@ -525,6 +564,31 @@ TEST_F(CppWrapper, FailedFactoriesReleaseCallbackCaptures) {
     ASSERT_FALSE(client);
     EXPECT_EQ(WTF_ERROR_OUT_OF_MEMORY, client.error().code);
     EXPECT_TRUE(weak.expired());
+}
+
+TEST_F(CppWrapper, UnsupportedBackendOptionsPreserveTheNativeError) {
+    auto context = Context();
+    mock.create_result = WTF_ERROR_NOT_SUPPORTED;
+    auto client = wtf::Client::Create(
+        context,
+        {
+            .url = "https://localhost:4433/",
+            .congestion_control = wtf::CongestionControl::kThroughput,
+        }
+    );
+    ASSERT_FALSE(client);
+    EXPECT_EQ(WTF_ERROR_NOT_SUPPORTED, client.error().code);
+
+    auto server = wtf::Server::Create(
+        context,
+        {
+            .transport = {
+                .enable_0rtt = true,
+            },
+        }
+    );
+    ASSERT_FALSE(server);
+    EXPECT_EQ(WTF_ERROR_NOT_SUPPORTED, server.error().code);
 }
 
 TEST_F(CppWrapper, DeferredRequestsCompleteOnceAndRejectWhenDropped) {
@@ -854,6 +918,9 @@ wtf_result_t wtf_server_create(
     const wtf_server_config_t* config,
     wtf_server_t** out
 ) {
+    if (mock.create_result != WTF_SUCCESS) {
+        return mock.create_result;
+    }
     *out = new wtf_server{
         .config = *config,
     };
