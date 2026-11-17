@@ -738,9 +738,16 @@ WTF_API uint32_t wtf_session_get_max_datagram_size(wtf_session_t* session);
 //! Open a new stream on a session
 //! @param session parent session for the stream
 //! @param type stream type (bidirectional or unidirectional)
+//! @param callback optional stream event callback; NULL disables stream notifications
+//! @param user_context caller-owned context passed to the stream callback
 //! @param stream pointer to receive the created stream; release with wtf_stream_unref()
 //! @return WTF_SUCCESS on success, error code on failure
+//!
+//! The callback and context are installed before the stream starts. Callbacks may run before
+//! this function returns; use event->stream inside the callback. Keep user_context valid until
+//! callbacks have finished. On failure, no further callbacks occur after this function returns.
 WTF_API wtf_result_t wtf_session_create_stream(wtf_session_t* session, wtf_stream_type_t type,
+                                               wtf_stream_callback_t callback, void* user_context,
                                                wtf_stream_t** stream);
 
 //! Get session state

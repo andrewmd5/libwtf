@@ -43,6 +43,13 @@ QUIC_STATUS QUIC_API StreamShutdown(HQUIC, QUIC_STREAM_SHUTDOWN_FLAGS, QUIC_UINT
     return QUIC_STATUS_SUCCESS;
 }
 
+QUIC_STATUS QUIC_API StreamOpen(HQUIC, QUIC_STREAM_OPEN_FLAGS, QUIC_STREAM_CALLBACK_HANDLER,
+                                void* context, HQUIC* stream)
+{
+    *stream = reinterpret_cast<HQUIC>(context);
+    return QUIC_STATUS_SUCCESS;
+}
+
 QUIC_STATUS QUIC_API StreamSend(HQUIC handle, const QUIC_BUFFER*, uint32_t,
                                 QUIC_SEND_FLAGS, void* context)
 {
@@ -78,6 +85,7 @@ protected:
         api.GetParam = GetParam;
         api.StreamClose = StreamClose;
         api.StreamShutdown = StreamShutdown;
+        api.StreamOpen = StreamOpen;
         api.StreamSend = StreamSend;
         context.quic_api = &api;
         server.context = &context;
@@ -163,6 +171,97 @@ protected:
         wtf_connection_destroy(conn);
     }
 };
+
+TEST_F(LifetimeRegression, StreamCreationInstallsCallbackBeforeStarting)
+{
+    auto* session = Session();
+    wtf_stream_t* stream = nullptr;
+    struct CallbackState {
+        wtf_stream_t** output;
+        wtf_stream_t* received_stream;
+    } state = {&stream, nullptr};
+
+    api.StreamSend = [](HQUIC handle, const QUIC_BUFFER* buffers, uint32_t count,
+                        QUIC_SEND_FLAGS flags, void* context) {
+        QUIC_STATUS status = StreamSend(handle, buffers, count, flags, context);
+        auto* stream = reinterpret_cast<wtf_stream*>(handle);
+        QUIC_STREAM_EVENT started = {};
+        started.Type = QUIC_STREAM_EVENT_START_COMPLETE;
+        started.START_COMPLETE.Status = QUIC_STATUS_SUCCESS;
+        started.START_COMPLETE.ID = 1;
+        wtf_upgraded_stream_callback(handle, stream, &started);
+
+        uint8_t payload = 0x5a;
+        QUIC_BUFFER buffer = {1, &payload};
+        QUIC_STREAM_EVENT receive = {};
+        receive.Type = QUIC_STREAM_EVENT_RECEIVE;
+        receive.RECEIVE.Buffers = &buffer;
+        receive.RECEIVE.BufferCount = 1;
+        receive.RECEIVE.TotalBufferLength = 1;
+        wtf_upgraded_stream_callback(handle, stream, &receive);
+        return status;
+    };
+
+    ASSERT_EQ(WTF_SUCCESS, wtf_session_create_stream(session, WTF_STREAM_BIDIRECTIONAL,
+        [](const wtf_stream_event_t* event) {
+            if (event->type != WTF_STREAM_EVENT_DATA_RECEIVED) {
+                return;
+            }
+            auto* state = static_cast<CallbackState*>(event->user_context);
+            ASSERT_NE(nullptr, state);
+            EXPECT_EQ(nullptr, *state->output);
+            state->received_stream = event->stream;
+            ASSERT_EQ(1u, event->data_received.buffer_count);
+            ASSERT_EQ(1u, event->data_received.buffers[0].length);
+            EXPECT_EQ(0x5a, event->data_received.buffers[0].data[0]);
+        }, &state, &stream));
+    ASSERT_NE(nullptr, stream);
+    EXPECT_EQ(stream, state.received_stream);
+    EXPECT_EQ(&state, wtf_stream_get_context(stream));
+
+    auto* created = static_cast<wtf_stream*>(stream);
+    children.push_back(created);
+    CompleteSends();
+    QUIC_STREAM_EVENT shutdown = {};
+    shutdown.Type = QUIC_STREAM_EVENT_SHUTDOWN_COMPLETE;
+    wtf_upgraded_stream_callback(created->quic_stream, created, &shutdown);
+    children.pop_back();
+    wtf_stream_unref(stream);
+}
+
+TEST_F(LifetimeRegression, StreamCreationAllowsNullCallback)
+{
+    auto* session = Session();
+    wtf_stream_t* stream = nullptr;
+    ASSERT_EQ(WTF_SUCCESS, wtf_session_create_stream(session, WTF_STREAM_UNIDIRECTIONAL,
+        nullptr, session, &stream));
+    ASSERT_NE(nullptr, stream);
+    auto* created = static_cast<wtf_stream*>(stream);
+    EXPECT_EQ(nullptr, created->callback);
+    EXPECT_EQ(session, wtf_stream_get_context(stream));
+    children.push_back(created);
+    wtf_stream_unref(stream);
+}
+
+TEST_F(LifetimeRegression, FailedStreamCreationReturnsCreditAndParentReference)
+{
+    auto* session = Session();
+    unsigned references = atomic_load(&session->ref_count);
+    api.StreamOpen = [](HQUIC, QUIC_STREAM_OPEN_FLAGS, QUIC_STREAM_CALLBACK_HANDLER,
+                        void*, HQUIC*) {
+        return QUIC_STATUS_OUT_OF_MEMORY;
+    };
+    wtf_stream_t* stream = reinterpret_cast<wtf_stream_t*>(1);
+    EXPECT_EQ(WTF_ERROR_OUT_OF_MEMORY, wtf_session_create_stream(session,
+        WTF_STREAM_BIDIRECTIONAL,
+        [](const wtf_stream_event_t*) {
+            ADD_FAILURE() << "StreamOpen failure must not invoke the stream callback";
+        }, session, &stream));
+    EXPECT_EQ(nullptr, stream);
+    EXPECT_EQ(references, atomic_load(&session->ref_count));
+    EXPECT_EQ(0u, session->pending_stream_count);
+    EXPECT_TRUE(pending_sends.empty());
+}
 
 TEST_F(LifetimeRegression, RepeatedResetBeforeReceiveReleasesConnectionOwner)
 {

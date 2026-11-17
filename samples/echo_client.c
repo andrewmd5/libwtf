@@ -68,11 +68,10 @@ static void stream_callback(const wtf_stream_event_t* event)
 static void send_stream_message(wtf_session_t* session, const char* message)
 {
     wtf_stream_t* stream = NULL;
-    if (wtf_session_create_stream(session, WTF_STREAM_BIDIRECTIONAL, &stream) != WTF_SUCCESS) {
+    if (wtf_session_create_stream(session, WTF_STREAM_BIDIRECTIONAL, stream_callback, NULL,
+                                 &stream) != WTF_SUCCESS) {
         return;
     }
-
-    wtf_stream_set_callback(stream, stream_callback);
 
     wtf_stream_send_copy(stream, message, strlen(message), false);
 

@@ -1,8 +1,4 @@
-if("${CMAKE_HOST_SYSTEM_NAME}" STREQUAL "Windows")
-    cmake_minimum_required(VERSION 3.20)
-else()
-    cmake_minimum_required(VERSION 3.16)
-endif()
+cmake_minimum_required(VERSION 3.20)
 
 include(cmake/GetGitVersion.cmake)
 get_git_version(GIT_VERSION WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
@@ -50,6 +46,7 @@ endif()
 
 option(WTF_BUILD_TESTS "Build tests" OFF)
 option(WTF_BUILD_SAMPLES "Build sample applications" OFF)
+option(WTF_BUILD_CPP "Build C++23 wrapper examples and tests" OFF)
 option(WTF_ENABLE_LOGGING "Enable logging support" ON)
 option(WTF_USE_EXTERNAL_MSQUIC "Use an external msquic installation" OFF)
 option(WTF_APPLY_BUNDLED_MSQUIC_PATCHES "Apply libwtf patches to the bundled msquic submodule" ON)
@@ -333,6 +330,7 @@ set(WTF_SOURCES
 
 set(WTF_PUBLIC_HEADERS
     include/wtf.h
+    include/wtf.hpp
 )
 
 add_library(wtf ${WTF_SOURCES})
@@ -414,6 +412,11 @@ if(BUILD_SHARED_LIBS)
 endif()
 
 add_library(WebTransport::wtf ALIAS wtf)
+
+add_library(wtf_cpp INTERFACE)
+add_library(WebTransport::cpp ALIAS wtf_cpp)
+target_link_libraries(wtf_cpp INTERFACE wtf)
+target_compile_features(wtf_cpp INTERFACE cxx_std_23)
 
 if(WTF_BUILD_SAMPLES AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/samples")
     add_subdirectory(samples)
