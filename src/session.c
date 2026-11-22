@@ -1159,6 +1159,43 @@ wtf_result_t wtf_session_get_peer_address(wtf_session_t* session, void* address_
     return WTF_SUCCESS;
 }
 
+wtf_result_t wtf_session_get_connection_statistics(wtf_session_t* session,
+                                                   wtf_connection_statistics_t* statistics)
+{
+    if (!session || !statistics) {
+        return WTF_ERROR_INVALID_PARAMETER;
+    }
+
+    wtf_session* sess = (wtf_session*)session;
+    if (sess->destroyed || !sess->connection || sess->connection->destroyed ||
+        !sess->connection->quic_connection) {
+        return WTF_ERROR_INVALID_STATE;
+    }
+
+    QUIC_STATISTICS_V2 quic = {0};
+    uint32_t size = sizeof(quic);
+    QUIC_STATUS status = sess->connection->context->quic_api->GetParam(
+        sess->connection->quic_connection, QUIC_PARAM_CONN_STATISTICS_V2, &size, &quic);
+    if (QUIC_FAILED(status)) {
+        return WTF_ERROR_NOT_SUPPORTED;
+    }
+
+    memset(statistics, 0, sizeof(*statistics));
+    statistics->rtt_us = quic.Rtt;
+    statistics->min_rtt_us = quic.MinRtt;
+    statistics->rtt_variance_us = quic.RttVariance;
+    statistics->congestion_window = quic.SendCongestionWindow;
+    statistics->path_mtu = quic.SendPathMtu;
+    statistics->congestion_events = quic.SendCongestionCount;
+    statistics->send_total_packets = quic.SendTotalPackets;
+    statistics->send_lost_packets = quic.SendSuspectedLostPackets >= quic.SendSpuriousLostPackets
+                                        ? quic.SendSuspectedLostPackets - quic.SendSpuriousLostPackets
+                                        : 0;
+    statistics->send_total_bytes = quic.SendTotalBytes;
+    statistics->recv_total_bytes = quic.RecvTotalBytes;
+    return WTF_SUCCESS;
+}
+
 uint32_t wtf_session_get_max_datagram_size(wtf_session_t* session)
 {
     if (!session) {

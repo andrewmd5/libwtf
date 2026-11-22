@@ -364,6 +364,22 @@ typedef struct {
     bool is_protocol_error;     //! True if protocol violation
 } wtf_error_details_t;
 
+//! Statistics of the QUIC connection that carries a session. Sessions pooled on one connection
+//! share it. Applications use these to pace what they send, for example to fit a sender's
+//! budget to the congestion window and round-trip time.
+typedef struct {
+    uint32_t rtt_us;               //! Smoothed round-trip time in microseconds
+    uint32_t min_rtt_us;           //! Lowest round-trip time observed, in microseconds
+    uint32_t rtt_variance_us;      //! Round-trip time variance in microseconds
+    uint32_t congestion_window;    //! Congestion window in bytes
+    uint16_t path_mtu;             //! Current path MTU in bytes
+    uint32_t congestion_events;    //! Congestion events so far
+    uint64_t send_total_packets;   //! QUIC packets sent
+    uint64_t send_lost_packets;    //! Packets declared lost and not later acknowledged
+    uint64_t send_total_bytes;     //! UDP payload bytes sent
+    uint64_t recv_total_bytes;     //! UDP payload bytes received
+} wtf_connection_statistics_t;
+
 // #endregion
 
 // #region Callback Types
@@ -767,6 +783,14 @@ WTF_API wtf_session_state_t wtf_session_get_state(wtf_session_t* session);
 //! @return WTF_SUCCESS on success, error code on failure
 WTF_API wtf_result_t wtf_session_get_peer_address(wtf_session_t* session, void* address_buffer,
                                                   size_t* buffer_size);
+
+//! Get statistics of the QUIC connection carrying a session
+//! @param session target session
+//! @param statistics receives the connection's statistics
+//! @return WTF_SUCCESS on success, WTF_ERROR_INVALID_STATE when the session's connection is gone,
+//! WTF_ERROR_NOT_SUPPORTED when the QUIC backend reports no statistics (Network.framework)
+WTF_API wtf_result_t wtf_session_get_connection_statistics(
+    wtf_session_t* session, wtf_connection_statistics_t* statistics);
 
 //! Set session user context
 //! Intended for setup-time use before concurrent callbacks are active.

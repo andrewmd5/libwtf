@@ -171,6 +171,28 @@ static int validate_session_max_datagram_size(const char* label, wtf_session_t* 
     return 0;
 }
 
+static int validate_session_connection_statistics(const char* label, wtf_session_t* session)
+{
+    wtf_connection_statistics_t statistics;
+    wtf_result_t result = wtf_session_get_connection_statistics(session, &statistics);
+    if (result != WTF_SUCCESS) {
+        fprintf(stderr, "e2e: %s connection statistics failed: %s\n", label,
+                wtf_result_to_string(result));
+        return 1;
+    }
+    if (statistics.rtt_us == 0 || statistics.congestion_window == 0 ||
+        statistics.send_total_packets == 0 || statistics.recv_total_bytes == 0) {
+        fprintf(stderr,
+                "e2e: %s connection statistics were empty (rtt %u us, window %u, sent %llu, "
+                "received %llu bytes)\n",
+                label, statistics.rtt_us, statistics.congestion_window,
+                (unsigned long long)statistics.send_total_packets,
+                (unsigned long long)statistics.recv_total_bytes);
+        return 1;
+    }
+    return 0;
+}
+
 static int make_cert_path(char* buffer, size_t buffer_length, const char* filename)
 {
     int len = snprintf(buffer, buffer_length, "%s/%s", WTF_TEST_CERT_DIR, filename);
@@ -263,6 +285,9 @@ static int run_dedicated_pinned_client(wtf_context_t* context, e2e_state_t* stat
     }
     if (!failure) {
         failure = validate_session_max_datagram_size("dedicated client", session);
+    }
+    if (!failure) {
+        failure = validate_session_connection_statistics("dedicated client", session);
     }
     if (!failure && atomic_load(&state->server_max_datagram_size) == 0) {
         fprintf(stderr, "e2e: server max datagram size was unavailable\n");

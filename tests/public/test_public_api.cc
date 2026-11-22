@@ -48,6 +48,13 @@ void free_response_headers(wtf_connection_response_t* response)
 
 }  // namespace
 
+TEST(PublicApi, ConnectionStatisticsRejectMissingArguments)
+{
+    wtf_connection_statistics_t statistics = {};
+    EXPECT_EQ(wtf_session_get_connection_statistics(nullptr, &statistics),
+              WTF_ERROR_INVALID_PARAMETER);
+}
+
 TEST(PublicApiSurface, UtilityExportsHaveStableContracts)
 {
     const wtf_version_info_t* version = wtf_get_version();
