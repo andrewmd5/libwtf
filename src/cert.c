@@ -20,6 +20,8 @@
     #include <openssl/x509.h>
 #endif
 
+#if defined(_WIN32) || defined(__APPLE__)
+// Only the Windows and Apple certificate paths copy DER out of a platform object.
 static wtf_result_t wtf_cert_copy_der(const uint8_t* source, size_t length, uint8_t** der,
                                       size_t* der_len)
 {
@@ -37,6 +39,7 @@ static wtf_result_t wtf_cert_copy_der(const uint8_t* source, size_t length, uint
     *der_len = length;
     return WTF_SUCCESS;
 }
+#endif
 
 #if defined(_WIN32)
 wtf_result_t wtf_cert_load_der_from_file(const char* path, uint8_t** der, size_t* der_len)
