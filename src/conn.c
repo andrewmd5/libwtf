@@ -16,6 +16,15 @@ bool wtf_connection_associate_stream_with_session(wtf_connection* conn, wtf_http
     if (!conn || !h3_stream || !session)
         return false;
 
+    // The session's own CONNECT stream carries its capsules; as one of its WebTransport streams
+    // it would share its MsQuic handle, which the CONNECT stream closes when it completes.
+    if (session->connect_stream && h3_stream->id == session->connect_stream->id) {
+        WTF_LOG_ERROR(conn->context, "stream",
+                      "CONNECT stream %llu cannot be a WebTransport stream of its own session",
+                      (unsigned long long)h3_stream->id);
+        return false;
+    }
+
     uint64_t stream_id = h3_stream->id;
     uint64_t session_id = session->id;
     wtf_stream_type_t stream_type = WTF_STREAM_IS_UNIDIRECTIONAL(stream_id)
@@ -122,26 +131,16 @@ bool wtf_connection_associate_stream_with_session(wtf_connection* conn, wtf_http
 
     if (h3_stream->quic_stream) {
         wt_stream->quic_stream = h3_stream->quic_stream;
+        conn->context->quic_api->SetCallbackHandler(
+            h3_stream->quic_stream, wtf_upgraded_stream_callback, wt_stream);
+        wtf_stream_add_ref(wt_stream);
+        h3_stream->quic_stream = NULL;
+        h3_stream->callback_transferred = true;
 
-        bool is_connect_stream = (h3_stream->id == session->connect_stream->id);
-
-        if (!is_connect_stream) {
-            conn->context->quic_api->SetCallbackHandler(
-                h3_stream->quic_stream, wtf_upgraded_stream_callback, wt_stream);
-            wtf_stream_add_ref(wt_stream);
-            h3_stream->quic_stream = NULL;
-            h3_stream->callback_transferred = true;
-
-            WTF_LOG_DEBUG(conn->context, "stream",
-                          "Transferred QUIC handle and switched callback for "
-                          "WebTransport stream %llu",
-                          (unsigned long long)stream_id);
-        } else {
-            WTF_LOG_DEBUG(conn->context, "stream",
-                          "Transferred QUIC handle from CONNECT stream %llu "
-                          "(preserving wtf_stream_callback)",
-                          (unsigned long long)stream_id);
-        }
+        WTF_LOG_DEBUG(conn->context, "stream",
+                      "Transferred QUIC handle and switched callback for "
+                      "WebTransport stream %llu",
+                      (unsigned long long)stream_id);
     }
 
     WTF_LOG_DEBUG(conn->context, "stream",

@@ -1310,12 +1310,13 @@ static wtf_frame_result_t wtf_http3_process_frames(
 
     while (processed_bytes < length) {
         if (!WTF_STREAM_IS_UNIDIRECTIONAL(stream->id) && processed_bytes == offset
-            && !stream->is_webtransport) {
+            && !stream->is_webtransport && !stream->first_varint_read) {
             wtf_varint_t signal_value;
             size_t signal_offset = processed_bytes;
             size_t signal_start = processed_bytes;
 
             if (wtf_varint_decode(length, data, &signal_offset, &signal_value)) {
+                stream->first_varint_read = true;
                 if (signal_value == WTF_FRAME_BIDIR_WEBTRANSPORT_STREAM) {
                     processed_bytes = signal_offset;
 

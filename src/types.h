@@ -324,6 +324,9 @@ typedef struct wtf_http3_stream {
 
     wtf_session* webtransport_session;
     bool is_webtransport;
+    // The stream's first varint has been read: the WebTransport stream signal (0x41) is only
+    // ever a bidirectional stream's first bytes, never a later frame's type.
+    bool first_varint_read;
     bool callback_transferred;
     wtf_http3_stream_flags_t flags;
 
