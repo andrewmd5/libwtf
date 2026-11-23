@@ -2365,6 +2365,37 @@ cleanup:
     return success;
 }
 
+// The flag recording that the peer opened a critical stream of this type, or NULL for any other.
+static bool* wtf_http3_peer_critical_stream_opened(wtf_connection* conn, uint64_t stream_type)
+{
+    switch (stream_type) {
+        case WTF_STREAM_TYPE_CONTROL:
+            return &conn->peer_control_stream_opened;
+        case WTF_STREAM_TYPE_QPACK_ENCODER:
+            return &conn->peer_encoder_stream_opened;
+        case WTF_STREAM_TYPE_QPACK_DECODER:
+            return &conn->peer_decoder_stream_opened;
+        default:
+            return NULL;
+    }
+}
+
+// The peer's control and QPACK streams: an error on one, or its closure, is a connection error
+// (RFC 9114, section 6.2.1; RFC 9204, section 4.2).
+static bool wtf_http3_is_peer_critical_stream(const wtf_http3_stream* stream)
+{
+    const wtf_connection* conn = stream->connection;
+    if (stream->id == UINT64_MAX || !WTF_STREAM_IS_UNIDIRECTIONAL(stream->id)) {
+        return false;
+    }
+    bool client_initiated = WTF_STREAM_IS_CLIENT_INITIATED(stream->id);
+    bool peer_initiated = client_initiated == (conn->role == WTF_ENDPOINT_SERVER);
+    return peer_initiated
+        && (stream->type == WTF_STREAM_TYPE_CONTROL
+            || stream->type == WTF_STREAM_TYPE_QPACK_ENCODER
+            || stream->type == WTF_STREAM_TYPE_QPACK_DECODER);
+}
+
 static bool wtf_http3_parse_uni_stream_type(wtf_http3_stream* stream, const uint8_t* data,
                                             size_t length, uint32_t* offset)
 {
@@ -2381,6 +2412,18 @@ static bool wtf_http3_parse_uni_stream_type(wtf_http3_stream* stream, const uint
         }
         *offset = (uint32_t)length;
         return true;
+    }
+
+    bool* critical_opened = wtf_http3_peer_critical_stream_opened(stream->connection, stream_type);
+    if (critical_opened && *critical_opened) {
+        WTF_LOG_ERROR(stream->connection->context, "http3",
+                      "Second peer stream of critical type %llu on stream %llu",
+                      (unsigned long long)stream_type, (unsigned long long)stream->id);
+        wtf_http3_shutdown_connection(stream->connection, WTF_H3_STREAM_CREATION_ERROR);
+        return false;
+    }
+    if (critical_opened) {
+        *critical_opened = true;
     }
 
     stream->type = stream_type;
@@ -2857,13 +2900,12 @@ static QUIC_STATUS wtf_handle_stream_receive(wtf_http3_stream* stream, HQUIC Str
                 QUIC_STREAM_SHUTDOWN_FLAG_ABORT_SEND | QUIC_STREAM_SHUTDOWN_FLAG_ABORT_RECEIVE,
                 error_code);
 
-            // Critical streams require connection shutdown
-            if (stream->type == WTF_STREAM_TYPE_CONTROL) {
+            // An error on a critical stream is the connection's: a QPACK stream's leaves its
+            // decoder or encoder mid-instruction, never to be fed again.
+            if (wtf_http3_is_peer_critical_stream(stream)) {
                 WTF_LOG_ERROR(conn->context, "stream",
-                              "Critical control stream error - closing connection");
-                conn->context->quic_api->ConnectionShutdown(
-                    conn->quic_connection, QUIC_CONNECTION_SHUTDOWN_FLAG_NONE,
-                    WTF_H3_CLOSED_CRITICAL_STREAM);
+                              "Critical stream error - closing connection");
+                wtf_http3_shutdown_connection(conn, error_code);
             }
 
             return QUIC_STATUS_SUCCESS;
@@ -2896,6 +2938,14 @@ static QUIC_STATUS wtf_handle_stream_shutdown_events(wtf_http3_stream* stream, H
             ? WTF_INTERNAL_STREAM_STATE_CLOSED : WTF_INTERNAL_STREAM_STATE_HALF_CLOSED_REMOTE;
     } else if (Event->Type == QUIC_STREAM_EVENT_PEER_SEND_ABORTED) {
         stream->state = WTF_INTERNAL_STREAM_STATE_RESET;
+    }
+
+    // The peer may not close its control or QPACK streams (RFC 9114, section 6.2.1).
+    if (Event->Type != QUIC_STREAM_EVENT_SHUTDOWN_COMPLETE
+        && wtf_http3_is_peer_critical_stream(stream)) {
+        WTF_LOG_ERROR(conn->context, "stream", "Peer closed critical stream %llu",
+                      (unsigned long long)stream->id);
+        wtf_http3_shutdown_connection(conn, WTF_H3_CLOSED_CRITICAL_STREAM);
     }
 
     if (stream->webtransport_session && stream->webtransport_session->connect_stream == stream) {

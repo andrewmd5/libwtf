@@ -403,6 +403,11 @@ typedef struct wtf_connection {
     wtf_http3_stream* peer_control_stream;
     wtf_http3_stream* peer_encoder_stream;
     wtf_http3_stream* peer_decoder_stream;
+    // Each critical stream type the peer opened, kept after the stream itself is gone: a second
+    // one is a connection error (RFC 9114, section 6.2.1; RFC 9204, section 4.2).
+    bool peer_control_stream_opened;
+    bool peer_encoder_stream_opened;
+    bool peer_decoder_stream_opened;
     http3_stream_map streams;
     mtx_t streams_mutex;
 
