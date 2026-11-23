@@ -55,6 +55,9 @@ endforeach()
 add_executable(wtf_regression_tests
     regression/test_lifetime.cc
     regression/echo_harness.c
+    spec/test_draft_02.cc
+    spec/test_draft_07.cc
+    spec/test_draft_15.cc
     ${WTF_REGRESSION_SOURCES}
 )
 target_include_directories(wtf_regression_tests PRIVATE $<TARGET_PROPERTY:wtf,INCLUDE_DIRECTORIES>)
@@ -160,7 +163,15 @@ if(WTF_ENABLE_COVERAGE)
 endif()
 
 add_test(NAME wtf_e2e_tests COMMAND wtf_e2e_tests)
-set_tests_properties(wtf_e2e_tests PROPERTIES LABELS "integration;e2e" TIMEOUT 30)
+add_test(NAME wtf_e2e_auto_mixed_drafts COMMAND wtf_e2e_tests mixed)
+set(WTF_E2E_TESTS wtf_e2e_tests wtf_e2e_auto_mixed_drafts)
+foreach(DRAFT IN ITEMS 02 07 15)
+    add_test(NAME wtf_e2e_draft_${DRAFT} COMMAND wtf_e2e_tests ${DRAFT})
+    list(APPEND WTF_E2E_TESTS wtf_e2e_draft_${DRAFT})
+endforeach()
+set_tests_properties(${WTF_E2E_TESTS} PROPERTIES
+    LABELS "integration;e2e" RESOURCE_LOCK wtf_e2e_port TIMEOUT 30)
+set_tests_properties(wtf_e2e_draft_15 PROPERTIES SKIP_RETURN_CODE 77)
 
 add_executable(wtf_browser_interop_server browser_chrome/server.c)
 

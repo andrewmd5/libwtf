@@ -643,6 +643,8 @@ WTF_API wtf_result_t wtf_client_create(wtf_context_t* context, const wtf_client_
 
 //! Open an asynchronous WebTransport session and return a retained handshaking session.
 //! Completion or failure is reported through the session callback.
+//! An excess session can return WTF_ERROR_REJECTED when a negotiated limit applies.
+//! A session queued before SETTINGS receives that error through its callback.
 //! @param client client instance to open
 //! @param session pointer to receive a retained session; release with wtf_session_unref()
 //! @return WTF_SUCCESS on success, error code on failure
@@ -686,6 +688,7 @@ WTF_API wtf_result_t wtf_session_close(wtf_session_t* session, uint32_t error_co
 WTF_API wtf_result_t wtf_session_drain(wtf_session_t* session);
 
 //! Send a datagram on a session
+//! Original draft-02 servers can send after the client registers the datagram format.
 //! @param session target session
 //! @param buffers array of buffers containing datagram data
 //! @param buffer_count number of buffers in array
@@ -703,6 +706,7 @@ WTF_API wtf_result_t wtf_session_send_datagram(wtf_session_t* session, const wtf
                                                uint32_t buffer_count, void* operation_context);
 
 //! Send a datagram using a library-owned payload copy.
+//! Original draft-02 servers can send after the client registers the datagram format.
 //! @param session target session
 //! @param data datagram payload bytes; may be NULL only when length is 0
 //! @param length datagram payload length in bytes
@@ -768,6 +772,34 @@ WTF_API wtf_session_state_t wtf_session_get_state(wtf_session_t* session);
 WTF_API wtf_result_t wtf_session_get_peer_address(wtf_session_t* session, void* address_buffer,
                                                   size_t* buffer_size);
 
+//! Read a statistic by its case-sensitive key. The value is written only on success.
+//! The following read-only keys describe the underlying QUIC connection and are shared by
+//! pooled sessions. Each call samples one key.
+//! | Key | Meaning |
+//! | --- | --- |
+//! | quic.smoothed_rtt_us | Smoothed round-trip time in microseconds |
+//! | quic.min_rtt_us | Minimum observed round-trip time in microseconds |
+//! | quic.rtt_variance_us | Round-trip time variation in microseconds |
+//! | quic.congestion_window_bytes | Send congestion window in bytes |
+//! | quic.path_mtu_bytes | Current path MTU in bytes |
+//! | quic.congestion_events | Send congestion events |
+//! | quic.packets_sent | QUIC packets sent |
+//! | quic.packets_lost | QUIC packets declared lost and not later acknowledged |
+//! | quic.bytes_sent | UDP payload bytes sent |
+//! | quic.bytes_received | UDP payload bytes received |
+//! Custom keys starting with app. belong to the individual session and can be read for as long
+//! as the caller holds a session reference, including after disconnect.
+//! @return WTF_ERROR_NOT_FOUND for an unknown or unset key, WTF_ERROR_INVALID_STATE if the
+//! connection is gone, or WTF_ERROR_NOT_SUPPORTED if the backend cannot supply a known metric.
+WTF_API wtf_result_t wtf_session_get_stat(wtf_session_t* session, const char* key, uint64_t* value);
+
+//! Insert or replace a custom statistic. The case-sensitive key must start with app. and
+//! include a suffix. The session owns a copy of the key.
+WTF_API wtf_result_t wtf_session_set_stat(wtf_session_t* session, const char* key, uint64_t value);
+
+//! Remove a custom app. statistic. Returns WTF_ERROR_NOT_FOUND if the key is unset.
+WTF_API wtf_result_t wtf_session_remove_stat(wtf_session_t* session, const char* key);
+
 //! Set session user context
 //! Intended for setup-time use before concurrent callbacks are active.
 //! @param session target session
@@ -821,7 +853,7 @@ WTF_API wtf_result_t wtf_stream_close(wtf_stream_t* stream);
 
 //! Abort a stream with error code
 //! @param stream stream to abort
-//! @param error_code application error code
+//! @param error_code application error code, at most 255 for original draft-02 peers
 //! @return WTF_SUCCESS on success, error code on failure
 WTF_API wtf_result_t wtf_stream_abort(wtf_stream_t* stream, uint32_t error_code);
 

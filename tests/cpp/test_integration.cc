@@ -131,6 +131,12 @@ TEST(CppIntegration, EchoStreamsAndDatagramsWithOwnedSends) {
     ASSERT_TRUE(client);
     auto session = client->Open();
     ASSERT_TRUE(session);
+    ASSERT_TRUE(session->SetStat("app.frames", 7));
+    EXPECT_EQ(7u, session->view().GetStat("app.frames").value_or(0));
+    EXPECT_TRUE(session->RemoveStat("app.frames"));
+    auto missing = session->GetStat("app.frames");
+    ASSERT_FALSE(missing);
+    EXPECT_EQ(WTF_ERROR_NOT_FOUND, missing.error().code);
     ASSERT_TRUE(stream_echo.try_acquire_for(5s));
     ASSERT_TRUE(datagram_echo.try_acquire_for(5s));
     ASSERT_TRUE(sent.try_acquire_for(5s));

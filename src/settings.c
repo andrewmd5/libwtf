@@ -14,10 +14,6 @@ void wtf_settings_init(wtf_settings* settings)
     settings->max_field_section_size = 65536;
     settings->qpack_max_table_capacity = WTF_QPACK_DYNAMIC_TABLE_SIZE;
     settings->qpack_blocked_streams = WTF_QPACK_MAX_BLOCKED_STREAMS;
-    settings->webtransport_max_sessions = WTF_DEFAULT_MAX_SESSIONS;
-    settings->wt_initial_max_data = 1ULL << 60;
-    settings->wt_initial_max_streams_bidi = 1ULL << 60;
-    settings->wt_initial_max_streams_uni = 1ULL << 60;
     settings->h3_datagram_enabled = false;
     settings->h3_datagram_rfc_enabled = false;
     settings->h3_datagram_draft04_enabled = false;
@@ -139,19 +135,6 @@ bool wtf_settings_decode_frame(wtf_connection* conn, const uint8_t* data, size_t
                               conn->peer_settings.enable_webtransport_draft15 ? "yes" : "no");
                 break;
 
-            case WTF_SETTING_WT_MAX_SESSIONS:
-                conn->peer_settings.enable_webtransport_draft15 = (setting_value != 0);
-                conn->peer_settings.enable_webtransport
-                    = conn->peer_settings.enable_webtransport_draft02
-                    || conn->peer_settings.enable_webtransport_draft07
-                    || conn->peer_settings.enable_webtransport_draft15;
-                conn->peer_settings.webtransport_max_sessions
-                    = setting_value > UINT32_MAX ? UINT32_MAX : (uint32_t)setting_value;
-                WTF_LOG_TRACE(conn->context, "http3",
-                              "Peer WebTransport max sessions: %u",
-                              conn->peer_settings.webtransport_max_sessions);
-                break;
-
             case WTF_SETTING_ENABLE_WEBTRANSPORT_DRAFT02: {
                 bool enabled = false;
                 if (!wtf_settings_decode_bool(conn, setting_id, setting_value, &enabled)) {
@@ -231,7 +214,6 @@ bool wtf_settings_decode_frame(wtf_connection* conn, const uint8_t* data, size_t
 
             case WTF_SETTING_WT_INITIAL_MAX_STREAMS_UNI:
                 conn->peer_settings.wt_initial_max_streams_uni = setting_value;
-                conn->peer_settings.wt_initial_max_streams_uni_received = true;
                 WTF_LOG_TRACE(conn->context, "http3",
                               "Peer WT initial max uni streams: %llu",
                               (unsigned long long)setting_value);
@@ -239,7 +221,6 @@ bool wtf_settings_decode_frame(wtf_connection* conn, const uint8_t* data, size_t
 
             case WTF_SETTING_WT_INITIAL_MAX_STREAMS_BIDI:
                 conn->peer_settings.wt_initial_max_streams_bidi = setting_value;
-                conn->peer_settings.wt_initial_max_streams_bidi_received = true;
                 WTF_LOG_TRACE(conn->context, "http3",
                               "Peer WT initial max bidi streams: %llu",
                               (unsigned long long)setting_value);
@@ -247,7 +228,6 @@ bool wtf_settings_decode_frame(wtf_connection* conn, const uint8_t* data, size_t
 
             case WTF_SETTING_WT_INITIAL_MAX_DATA:
                 conn->peer_settings.wt_initial_max_data = setting_value;
-                conn->peer_settings.wt_initial_max_data_received = true;
                 WTF_LOG_TRACE(conn->context, "http3", "Peer WT initial max data: %llu",
                               (unsigned long long)setting_value);
                 break;
@@ -266,11 +246,6 @@ bool wtf_settings_decode_frame(wtf_connection* conn, const uint8_t* data, size_t
 bool wtf_settings_encode_frame(wtf_connection* conn, uint8_t* buffer, size_t buffer_size,
                                size_t* frame_length)
 {
-#ifdef WTF_QUIC_BACKEND_NETWORK
-    if (conn && conn->requested_webtransport_draft == WTF_WEBTRANSPORT_DRAFT_15 && !conn->reliable_reset_negotiated) {
-        return false;
-    }
-#endif
     if (!conn || !buffer || !frame_length)
         return false;
 
@@ -295,10 +270,8 @@ bool wtf_settings_encode_frame(wtf_connection* conn, uint8_t* buffer, size_t buf
     } while (0)
 
     bool draft_auto = conn->requested_webtransport_draft == WTF_WEBTRANSPORT_DRAFT_AUTO;
-    bool draft15 = draft_auto || conn->requested_webtransport_draft == WTF_WEBTRANSPORT_DRAFT_15;
-#ifdef WTF_QUIC_BACKEND_NETWORK
-    draft15 = draft15 && conn->reliable_reset_negotiated;
-#endif
+    bool draft15 = conn->reliable_reset_negotiated
+        && (draft_auto || conn->requested_webtransport_draft == WTF_WEBTRANSPORT_DRAFT_15);
     bool draft07 = draft_auto || conn->requested_webtransport_draft == WTF_WEBTRANSPORT_DRAFT_07;
     bool draft02 = draft_auto || conn->requested_webtransport_draft == WTF_WEBTRANSPORT_DRAFT_02;
 
@@ -310,8 +283,6 @@ bool wtf_settings_encode_frame(wtf_connection* conn, uint8_t* buffer, size_t buf
     }
     if (draft15) {
         WTF_ADD_SETTING(WTF_SETTING_WT_ENABLED_DRAFT15, 1);
-        WTF_ADD_SETTING(WTF_SETTING_WT_MAX_SESSIONS,
-                        conn->local_settings.webtransport_max_sessions);
     }
     if (draft02) {
         WTF_ADD_SETTING(WTF_SETTING_ENABLE_WEBTRANSPORT_DRAFT02, 1);

@@ -340,6 +340,10 @@ wtf_result_t wtf_server_create(wtf_context_t* context, const wtf_server_config_t
     if (config && config->enable_0rtt && !wtf_network_supports_early_data()) {
         return WTF_ERROR_NOT_SUPPORTED;
     }
+#elif !defined(QUIC_API_ENABLE_PREVIEW_FEATURES)
+    if (config->draft == WTF_WEBTRANSPORT_DRAFT_15) {
+        return WTF_ERROR_NOT_SUPPORTED;
+    }
 #endif
 
     ctx = context;
@@ -735,12 +739,7 @@ void wtf_server_destroy(wtf_server_t* server)
     if (connections) {
         for (size_t i = 0; i < connection_count; i++) {
             wtf_connection* conn = connections[i];
-            HQUIC connection = conn->quic_connection;
-            if (connection && ctx && ctx->quic_api) {
-                ctx->quic_api->ConnectionShutdown(connection, QUIC_CONNECTION_SHUTDOWN_FLAG_NONE, 0);
-                ctx->quic_api->ConnectionClose(connection);
-                conn->quic_connection = NULL;
-            }
+            wtf_connection_close_transport(conn, true);
             wtf_connection_release(conn);
         }
         free(connections);

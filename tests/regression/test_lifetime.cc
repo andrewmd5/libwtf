@@ -1,6 +1,8 @@
 #include <gtest/gtest.h>
 
 #include <cstdint>
+#include <cstring>
+#include <tuple>
 #include <vector>
 
 extern "C" {
@@ -10,6 +12,7 @@ extern "C" {
 #include "session.h"
 #include "stream.h"
 #include "utils.h"
+#include "varint.h"
 
 void wtf_test_echo_session(wtf_session_t*);
 void wtf_test_echo_stream(wtf_session_t*, wtf_stream_t*);
@@ -79,6 +82,7 @@ protected:
     wtf_connection* conn = nullptr;
     std::vector<wtf_http3_stream*> connects;
     std::vector<wtf_stream*> children;
+    std::vector<uint64_t> connection_errors;
     uintptr_t next_handle = 1;
 
     void SetUp() override
@@ -99,6 +103,34 @@ protected:
     }
 
     HQUIC Handle() { return reinterpret_cast<HQUIC>(next_handle++); }
+
+    void CaptureConnectionErrors()
+    {
+        conn->quic_connection = reinterpret_cast<HQUIC>(&connection_errors);
+        api.ConnectionShutdown = [](HQUIC handle, QUIC_CONNECTION_SHUTDOWN_FLAGS, QUIC_UINT62 code) {
+            reinterpret_cast<std::vector<uint64_t>*>(handle)->push_back(code);
+        };
+    }
+
+    wtf_http3_stream* Stream(uint64_t id)
+    {
+        auto* stream = wtf_http3_stream_create(conn, Handle(), id);
+        wtf_http3_stream_add_ref(stream);
+        connects.push_back(stream);
+        return stream;
+    }
+
+    void Receive(wtf_http3_stream* stream, std::vector<uint8_t> bytes, bool fin = false)
+    {
+        QUIC_BUFFER buffer = {static_cast<uint32_t>(bytes.size()), bytes.data()};
+        QUIC_STREAM_EVENT event = {};
+        event.Type = QUIC_STREAM_EVENT_RECEIVE;
+        event.RECEIVE.Buffers = &buffer;
+        event.RECEIVE.BufferCount = 1;
+        event.RECEIVE.TotalBufferLength = bytes.size();
+        event.RECEIVE.Flags = fin ? QUIC_RECEIVE_FLAG_FIN : QUIC_RECEIVE_FLAG_NONE;
+        EXPECT_EQ(QUIC_STATUS_SUCCESS, wtf_http3_stream_callback(stream->quic_stream, stream, &event));
+    }
 
     wtf_session* Session()
     {
@@ -231,6 +263,91 @@ TEST_F(LifetimeRegression, StreamCreationInstallsCallbackBeforeStarting)
     wtf_stream_unref(stream);
 }
 
+TEST_F(LifetimeRegression, CustomStatsOwnTheirKeysAndStayWithTheirSession)
+{
+    auto* first = Session();
+    auto* second = Session();
+    char key[] = "app.frames";
+    ASSERT_EQ(WTF_SUCCESS, wtf_session_set_stat(first, key, 4));
+    key[4] = 'x';
+
+    uint64_t value = 99;
+    ASSERT_EQ(WTF_SUCCESS, wtf_session_get_stat(first, "app.frames", &value));
+    EXPECT_EQ(4u, value);
+    EXPECT_EQ(WTF_ERROR_NOT_FOUND, wtf_session_get_stat(second, "app.frames", &value));
+    EXPECT_EQ(4u, value);
+    EXPECT_EQ(WTF_ERROR_NOT_FOUND, wtf_session_get_stat(first, "quic.unknown", &value));
+    EXPECT_EQ(WTF_ERROR_INVALID_PARAMETER,
+              wtf_session_set_stat(first, "quic.packets_sent", 1));
+    EXPECT_EQ(WTF_ERROR_INVALID_PARAMETER, wtf_session_remove_stat(first, "app."));
+    EXPECT_EQ(WTF_ERROR_INVALID_PARAMETER, wtf_session_get_stat(first, "app.frames", nullptr));
+
+    ASSERT_EQ(WTF_SUCCESS, wtf_session_set_stat(first, "app.frames", 0));
+    wtf_session_shutdown(first, 0, "closed");
+    ASSERT_EQ(WTF_SUCCESS, wtf_session_get_stat(first, "app.frames", &value));
+    EXPECT_EQ(0u, value);
+    EXPECT_EQ(WTF_SUCCESS, wtf_session_remove_stat(first, "app.frames"));
+    EXPECT_EQ(WTF_ERROR_NOT_FOUND, wtf_session_remove_stat(first, "app.frames"));
+}
+
+template <typename Bits, typename Value>
+void ExpectCustomStatRoundTrip(wtf_session_t* session, const char* key, Value original)
+{
+    static_assert(sizeof(Bits) == sizeof(Value));
+    SCOPED_TRACE(key);
+
+    Bits bits;
+    std::memcpy(&bits, &original, sizeof(bits));
+    ASSERT_EQ(WTF_SUCCESS, wtf_session_set_stat(session, key, bits));
+
+    uint64_t stored = 0;
+    ASSERT_EQ(WTF_SUCCESS, wtf_session_get_stat(session, key, &stored));
+    EXPECT_EQ(static_cast<uint64_t>(bits), stored);
+
+    Bits restored_bits = static_cast<Bits>(stored);
+    Value restored;
+    std::memcpy(&restored, &restored_bits, sizeof(restored));
+    EXPECT_EQ(original, restored);
+}
+
+TEST_F(LifetimeRegression, CustomStatsPreserveNumericBitPatterns)
+{
+    auto* session = Session();
+    ExpectCustomStatRoundTrip<uint32_t>(session, "app.float", -16.67f);
+    ExpectCustomStatRoundTrip<uint64_t>(session, "app.double", 1234.56789012345);
+    ExpectCustomStatRoundTrip<uint64_t>(session, "app.negative_zero", -0.0);
+    ExpectCustomStatRoundTrip<uint16_t>(session, "app.short", int16_t{-42});
+    ExpectCustomStatRoundTrip<uint64_t>(session, "app.counter", UINT64_MAX);
+}
+
+TEST_F(LifetimeRegression, TransportCloseWaitsForStatisticsQuery)
+{
+    auto* session = Session();
+    conn->server = nullptr;
+    conn->quic_connection = reinterpret_cast<HQUIC>(conn);
+    api.ConnectionClose = [](HQUIC) { ++closed_handles; };
+    api.GetParam = [](HQUIC handle, uint32_t param, uint32_t*, void* buffer) -> QUIC_STATUS {
+        if (param != QUIC_PARAM_CONN_STATISTICS_V2) {
+            return QUIC_STATUS_NOT_SUPPORTED;
+        }
+        QUIC_CONNECTION_EVENT closed = {};
+        closed.Type = QUIC_CONNECTION_EVENT_SHUTDOWN_COMPLETE;
+        auto* connection = reinterpret_cast<wtf_connection*>(handle);
+        wtf_connection_callback(handle, connection, &closed);
+        EXPECT_EQ(0u, closed_handles);
+        auto* stats = static_cast<QUIC_STATISTICS_V2*>(buffer);
+        stats->SendSuspectedLostPackets = 10;
+        stats->SendSpuriousLostPackets = 4;
+        return QUIC_STATUS_SUCCESS;
+    };
+
+    uint64_t value = 0;
+    ASSERT_EQ(WTF_SUCCESS, wtf_session_get_stat(session, "quic.packets_lost", &value));
+    EXPECT_EQ(6u, value);
+    EXPECT_EQ(1u, closed_handles);
+    EXPECT_EQ(WTF_ERROR_INVALID_STATE, wtf_session_get_stat(session, "quic.packets_lost", &value));
+}
+
 TEST_F(LifetimeRegression, StreamCreationAllowsNullCallback)
 {
     auto* session = Session();
@@ -284,9 +401,8 @@ TEST_F(LifetimeRegression, ShutdownRemovesRegisteredStreamWithoutQueryingId)
     stream->id = 4;
     http3_stream_map_insert(&conn->streams, 4, stream);
     wtf_http3_stream_add_ref(stream);
-    conn->peer_control_stream = stream;
     Finish(stream);
-    EXPECT_EQ(nullptr, conn->peer_control_stream);
+    EXPECT_EQ(0u, http3_stream_map_size(&conn->streams));
     EXPECT_EQ(1u, closed_handles);
 }
 
@@ -489,35 +605,286 @@ TEST_F(LifetimeRegression, QpackEncoderStreamCanArriveBeforeSettings)
     EXPECT_TRUE(wtf_qpack_process_encoder(&context, &conn->qpack, duplicate, sizeof(duplicate)));
 }
 
-TEST_F(LifetimeRegression, ControlStreamTypeIsNotParsedAgainAfterAReceiveBoundary)
+TEST_F(LifetimeRegression, QpackDecoderStreamCanArriveBeforeSettings)
 {
-    api.GetParam = [](HQUIC, uint32_t parameter, uint32_t* size, void* value) {
-        if (parameter != QUIC_PARAM_STREAM_ID || *size < sizeof(uint64_t)) {
-            return QUIC_STATUS_NOT_SUPPORTED;
-        }
-        *static_cast<uint64_t*>(value) = 3;
-        *size = sizeof(uint64_t);
-        return QUIC_STATUS_SUCCESS;
-    };
-    auto* stream = wtf_http3_stream_create(conn, Handle(), 3);
-    wtf_http3_stream_add_ref(stream);
-    connects.push_back(stream);
-    uint8_t control_type = WTF_STREAM_TYPE_CONTROL;
-    QUIC_BUFFER buffer = {1, &control_type};
-    QUIC_STREAM_EVENT receive = {};
-    receive.Type = QUIC_STREAM_EVENT_RECEIVE;
-    receive.RECEIVE.Buffers = &buffer;
-    receive.RECEIVE.BufferCount = 1;
-    receive.RECEIVE.TotalBufferLength = 1;
-    wtf_http3_stream_callback(stream->quic_stream, stream, &receive);
+    uint8_t instruction[16];
+    auto length = lsqpack_dec_cancel_stream_id(&conn->qpack.decoder, 64, instruction,
+                                              sizeof(instruction));
+    ASSERT_GT(length, 1);
+    ASSERT_TRUE(wtf_qpack_process_decoder(&context, &conn->qpack, instruction, 1));
+    ASSERT_TRUE(wtf_qpack_init_encoder(&context, &conn->qpack));
+    EXPECT_TRUE(wtf_qpack_process_decoder(&context, &conn->qpack, instruction + 1, length - 1));
+}
+
+class CriticalStreamRegression : public LifetimeRegression {
+protected:
+    void SetUp() override
+    {
+        LifetimeRegression::SetUp();
+        ASSERT_NE(nullptr, conn);
+        CaptureConnectionErrors();
+    }
+};
+
+class CriticalStreamTypeRegression : public CriticalStreamRegression,
+                                     public ::testing::WithParamInterface<wtf_h3_stream_type_t> {};
+
+TEST_P(CriticalStreamTypeRegression, RejectsDuplicatePeerCriticalStreams)
+{
+    auto type = static_cast<uint8_t>(GetParam());
+    auto* first = Stream(2);
+    Receive(first, {type});
+    EXPECT_EQ(type, first->type);
+    ASSERT_TRUE(connection_errors.empty());
+
+    auto* duplicate = Stream(6);
+    Receive(duplicate, {type});
+    EXPECT_EQ(UINT64_MAX, duplicate->type);
+    Receive(Stream(10), {WTF_STREAM_TYPE_QPACK_DECODER});
+    EXPECT_EQ(std::vector<uint64_t>({WTF_H3_STREAM_CREATION_ERROR}), connection_errors);
+}
+
+INSTANTIATE_TEST_SUITE_P(Http3, CriticalStreamTypeRegression,
+    ::testing::Values(WTF_STREAM_TYPE_CONTROL, WTF_STREAM_TYPE_QPACK_ENCODER,
+                      WTF_STREAM_TYPE_QPACK_DECODER));
+
+TEST_F(CriticalStreamRegression, ControlStreamTypeIsNotParsedAgainAfterAReceiveBoundary)
+{
+    auto* stream = Stream(2);
+    Receive(stream, {WTF_STREAM_TYPE_CONTROL});
     ASSERT_EQ(WTF_STREAM_TYPE_CONTROL, stream->type);
 
-    uint8_t extension_frame[] = {0x21, 0x00};
-    buffer = {sizeof(extension_frame), extension_frame};
-    receive.RECEIVE.TotalBufferLength = sizeof(extension_frame);
-    wtf_http3_stream_callback(stream->quic_stream, stream, &receive);
+    conn->peer_settings.settings_received = true;
+    Receive(stream, {0x21, 0x00});
     EXPECT_EQ(WTF_STREAM_TYPE_CONTROL, stream->type);
-    EXPECT_EQ(stream, conn->peer_control_stream);
+    EXPECT_TRUE(connection_errors.empty());
+}
+
+TEST_F(CriticalStreamRegression, ControlStreamMustBeginWithSettings)
+{
+    Receive(Stream(2), {WTF_STREAM_TYPE_CONTROL, 0x21, 0x00});
+    EXPECT_EQ(std::vector<uint64_t>({WTF_H3_MISSING_SETTINGS}), connection_errors);
+}
+
+TEST_F(CriticalStreamRegression, SecondSettingsFrameIsUnexpected)
+{
+    conn->peer_settings.settings_received = true;
+    Receive(Stream(2), {WTF_STREAM_TYPE_CONTROL, WTF_FRAME_SETTINGS, 0x00});
+    EXPECT_EQ(std::vector<uint64_t>({WTF_H3_FRAME_UNEXPECTED}), connection_errors);
+}
+
+TEST_F(CriticalStreamRegression, WebTransportSignalIsInvalidOnControlStream)
+{
+    conn->peer_settings.settings_received = true;
+    uint8_t header[1 + sizeof(uint64_t)] = {WTF_STREAM_TYPE_CONTROL};
+    auto* end = wtf_varint_encode(WTF_FRAME_BIDIR_WEBTRANSPORT_STREAM, header + 1);
+    Receive(Stream(2), std::vector<uint8_t>(header, end));
+    EXPECT_EQ(std::vector<uint64_t>({WTF_H3_FRAME_ERROR}), connection_errors);
+}
+
+TEST_F(CriticalStreamRegression, TruncatedControlFrameOnFinIsAFrameError)
+{
+    Receive(Stream(2), {WTF_STREAM_TYPE_CONTROL, WTF_FRAME_SETTINGS}, true);
+    EXPECT_EQ(std::vector<uint64_t>({WTF_H3_FRAME_ERROR}), connection_errors);
+}
+
+TEST_F(CriticalStreamRegression, FinOnPeerCriticalStreamClosesConnection)
+{
+    auto* stream = Stream(2);
+    Receive(stream, {WTF_STREAM_TYPE_QPACK_ENCODER}, true);
+    QUIC_STREAM_EVENT event = {};
+    event.Type = QUIC_STREAM_EVENT_PEER_SEND_SHUTDOWN;
+    wtf_http3_stream_callback(stream->quic_stream, stream, &event);
+    EXPECT_EQ(std::vector<uint64_t>({WTF_H3_CLOSED_CRITICAL_STREAM}), connection_errors);
+}
+
+TEST_F(CriticalStreamRegression, StopSendingOnLocalCriticalStreamClosesConnection)
+{
+    auto* stream = Stream(3);
+    stream->type = WTF_STREAM_TYPE_QPACK_DECODER;
+    QUIC_STREAM_EVENT event = {};
+    event.Type = QUIC_STREAM_EVENT_PEER_RECEIVE_ABORTED;
+    wtf_http3_stream_callback(stream->quic_stream, stream, &event);
+    EXPECT_EQ(std::vector<uint64_t>({WTF_H3_CLOSED_CRITICAL_STREAM}), connection_errors);
+}
+
+TEST_F(CriticalStreamRegression, IndependentCriticalStreamShutdownClosesConnection)
+{
+    auto* stream = Stream(3);
+    stream->type = WTF_STREAM_TYPE_CONTROL;
+    connects.pop_back();
+    Finish(stream);
+    EXPECT_EQ(std::vector<uint64_t>({WTF_H3_CLOSED_CRITICAL_STREAM}), connection_errors);
+}
+
+TEST_F(CriticalStreamRegression, CriticalStreamCanFinishDuringConnectionTeardown)
+{
+    auto* stream = Stream(3);
+    stream->type = WTF_STREAM_TYPE_CONTROL;
+    QUIC_STREAM_EVENT event = {};
+    event.Type = QUIC_STREAM_EVENT_SHUTDOWN_COMPLETE;
+    event.SHUTDOWN_COMPLETE.ConnectionShutdown = true;
+    connects.pop_back();
+    wtf_http3_stream_callback(stream->quic_stream, stream, &event);
+    EXPECT_TRUE(connection_errors.empty());
+}
+
+class WebTransportPrefixRegression : public LifetimeRegression,
+    public ::testing::WithParamInterface<std::tuple<wtf_endpoint_role_t, size_t>> {
+protected:
+    std::vector<uint8_t> payload;
+    HQUIC changed_callback = nullptr;
+    unsigned peer_closes = 0;
+
+    static void OnStreamEvent(const wtf_stream_event_t* event)
+    {
+        auto* test = static_cast<WebTransportPrefixRegression*>(event->user_context);
+        if (event->type == WTF_STREAM_EVENT_DATA_RECEIVED) {
+            for (uint32_t i = 0; i < event->data_received.buffer_count; ++i) {
+                const auto& buffer = event->data_received.buffers[i];
+                test->payload.insert(test->payload.end(), buffer.data, buffer.data + buffer.length);
+            }
+        } else if (event->type == WTF_STREAM_EVENT_PEER_CLOSED) {
+            ++test->peer_closes;
+        }
+    }
+
+    static void OnSessionEvent(const wtf_session_event_t* event)
+    {
+        if (event->type != WTF_SESSION_EVENT_STREAM_OPENED) {
+            return;
+        }
+        auto* test = static_cast<WebTransportPrefixRegression*>(event->user_context);
+        auto* stream = event->stream_opened.stream;
+        test->children.push_back(stream);
+        wtf_stream_set_callback(stream, OnStreamEvent);
+    }
+
+    static void QUIC_API ChangeCallback(HQUIC handle, void*, void* context)
+    {
+        auto* stream = static_cast<wtf_stream*>(context);
+        auto* test = static_cast<WebTransportPrefixRegression*>(stream->session->user_context);
+        EXPECT_EQ(nullptr, test->changed_callback);
+        test->changed_callback = handle;
+    }
+};
+
+TEST_P(WebTransportPrefixRegression, FragmentedPrefixDeliversPayloadAndFin)
+{
+    auto [role, split] = GetParam();
+    conn->role = role;
+    next_handle = 15; // The session uses a two-byte stream ID.
+    auto* session = Session();
+    HQUIC connect_handle = session->connect_stream->quic_stream;
+    session->user_context = this;
+    session->callback = OnSessionEvent;
+    api.SetCallbackHandler = ChangeCallback;
+
+    auto* stream = Stream(role == WTF_ENDPOINT_SERVER ? session->id + 4 : 1);
+    HQUIC data_handle = stream->quic_stream;
+    uint8_t bytes[2 * sizeof(uint64_t) + 1];
+    auto* end = wtf_varint_encode(WTF_FRAME_BIDIR_WEBTRANSPORT_STREAM, bytes);
+    end = wtf_varint_encode(session->id, end);
+    ASSERT_LT(split, static_cast<size_t>(end - bytes));
+    *end++ = 0x5a;
+
+    Receive(stream, std::vector<uint8_t>(bytes, bytes + split));
+    ASSERT_TRUE(children.empty());
+    EXPECT_FALSE(stream->is_webtransport);
+
+    wtf_http3_stream_add_ref(stream);
+    Receive(stream, std::vector<uint8_t>(bytes + split, end), true);
+    bool transferred = stream->callback_transferred;
+    if (transferred) {
+        connects.pop_back();
+    }
+    wtf_http3_stream_release(stream);
+
+    ASSERT_TRUE(transferred);
+    ASSERT_EQ(1u, children.size());
+    EXPECT_EQ(data_handle, changed_callback);
+    EXPECT_EQ(data_handle, children.front()->quic_stream);
+    EXPECT_EQ(connect_handle, session->connect_stream->quic_stream);
+    EXPECT_EQ(std::vector<uint8_t>({0x5a}), payload);
+    EXPECT_EQ(1u, peer_closes);
+}
+
+INSTANTIATE_TEST_SUITE_P(Http3, WebTransportPrefixRegression,
+    ::testing::Combine(::testing::Values(WTF_ENDPOINT_SERVER, WTF_ENDPOINT_CLIENT),
+                       ::testing::Values<size_t>(1, 2, 3)));
+
+TEST_F(LifetimeRegression, FragmentedGreaseFrameKeepsBidirectionalStreamInHttp3)
+{
+    auto* stream = Stream(4);
+    uint8_t frame[sizeof(uint64_t) + 1];
+    auto* end = wtf_varint_encode(0x40, frame);
+    *end++ = 0; // GREASE frame with an empty payload.
+
+    Receive(stream, {frame[0]});
+    EXPECT_EQ(0u, stream->flags & WTF_HTTP3_STREAM_FLAG_BIDI_HTTP3);
+    Receive(stream, std::vector<uint8_t>(frame + 1, end));
+    EXPECT_NE(0u, stream->flags & WTF_HTTP3_STREAM_FLAG_BIDI_HTTP3);
+    EXPECT_FALSE(stream->is_webtransport);
+}
+
+TEST_F(LifetimeRegression, QueuedConnectRequestRejectsAnotherHeadersFrame)
+{
+    CaptureConnectionErrors();
+    auto* stream = Stream(0);
+    Receive(stream, {WTF_FRAME_HEADERS, 2, 0, 0});
+    ASSERT_TRUE(stream->has_pending_connect_header_block);
+    ASSERT_EQ(1u, conn->pending_connect_count);
+    ASSERT_TRUE(connection_errors.empty());
+
+    Receive(stream, {WTF_FRAME_HEADERS});
+    EXPECT_EQ(std::vector<uint64_t>({WTF_H3_FRAME_UNEXPECTED}), connection_errors);
+    EXPECT_EQ(1u, conn->pending_connect_count);
+    EXPECT_EQ(0u, session_map_size(&conn->sessions));
+}
+
+TEST_F(LifetimeRegression, ClientConnectAcceptsInterimResponsesAndCompletesOnce)
+{
+    CaptureConnectionErrors();
+    auto* session = Session();
+    auto* stream = session->connect_stream;
+    session->state = WTF_SESSION_HANDSHAKING;
+    stream->flags = WTF_HTTP3_STREAM_FLAG_CLIENT_CONNECT;
+    ASSERT_TRUE(wtf_qpack_init_encoder(&context, &conn->qpack));
+
+    unsigned connected = 0;
+    session->user_context = &connected;
+    session->callback = [](const wtf_session_event_t* event) {
+        if (event->type == WTF_SESSION_EVENT_CONNECTED) {
+            EXPECT_EQ(200u, event->connected.status_code);
+            ++*static_cast<unsigned*>(event->user_context);
+        }
+    };
+
+    wtf_client client = {};
+    ASSERT_EQ(thrd_success, mtx_init(&client.mutex, mtx_plain));
+    conn->client = &client;
+    conn->role = WTF_ENDPOINT_CLIENT;
+    conn->selected_webtransport_draft = WTF_WEBTRANSPORT_DRAFT_07;
+
+    constexpr uint8_t early_hints = 0xc0 | LSQPACK_TNV_STATUS_103;
+    constexpr uint8_t ok = 0xc0 | LSQPACK_TNV_STATUS_200;
+    Receive(stream, {WTF_FRAME_HEADERS, 3, 0, 0, early_hints});
+    EXPECT_EQ(WTF_SESSION_HANDSHAKING, session->state);
+    EXPECT_EQ(0u, connected);
+    EXPECT_TRUE(connection_errors.empty());
+
+    Receive(stream, {WTF_FRAME_HEADERS, 3, 0, 0, early_hints,
+                     WTF_FRAME_HEADERS, 3, 0, 0, ok});
+    EXPECT_EQ(WTF_SESSION_CONNECTED, session->state);
+    EXPECT_EQ(1u, connected);
+    EXPECT_TRUE(connection_errors.empty());
+
+    Receive(stream, {WTF_FRAME_HEADERS});
+    EXPECT_EQ(std::vector<uint64_t>({WTF_H3_FRAME_UNEXPECTED}), connection_errors);
+    EXPECT_EQ(1u, connected);
+
+    conn->client = nullptr;
+    mtx_destroy(&client.mutex);
 }
 
 TEST_F(LifetimeRegression, QuicStreamAvailabilityDoesNotGrantWebTransportCredit)

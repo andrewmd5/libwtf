@@ -6,6 +6,15 @@ with an optional native macOS Network.framework backend.
 Supports server and native client use, streams, datagrams, pooled sessions, and draft-15,
 draft-07, and draft-02 negotiation.
 
+`WTF_WEBTRANSPORT_DRAFT_AUTO` selects the highest common draft on each QUIC
+connection. Draft-15 requires negotiated reliable stream resets and limits
+connections without WebTransport flow control to one session. Draft-07 clients
+also honor the server's advertised session limit.
+
+Explicit draft-02 mode uses the original datagram registration and 8-bit stream
+reset codes. Use AUTO for browser peers that combine draft-02 CONNECT with RFC
+HTTP/3 datagrams.
+
 ## Build
 
 ```sh

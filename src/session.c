@@ -20,6 +20,11 @@ bool wtf_session_process_datagram(wtf_session* session, const uint8_t* data, siz
         return false;
     }
 
+    if (wtf_connection_uses_original_draft02(session->connection)
+        && !atomic_load_explicit(&session->draft02_datagrams_registered, memory_order_acquire)) {
+        return true; // QUIC DATAGRAM can arrive before its registration capsule.
+    }
+
     if (length > UINT32_MAX) {
         return false;
     }
@@ -37,7 +42,7 @@ bool wtf_session_process_datagram(wtf_session* session, const uint8_t* data, siz
 
 void wtf_session_retire(wtf_session* session)
 {
-    if (!session || !session->connection || session->retired) {
+    if (!session || !session->connection) {
         return;
     }
 
@@ -49,7 +54,7 @@ void wtf_session_retire(wtf_session* session)
         session->retired = true;
         release_owner = true;
         if (conn->role == WTF_ENDPOINT_CLIENT) {
-            wtf_client_note_session_closed(conn->client);
+            wtf_client_note_session_closed(conn->client, session);
         }
     }
     mtx_unlock(&conn->sessions_mutex);
@@ -438,6 +443,7 @@ void wtf_session_release(wtf_session* session)
 
     wtf_connection* conn = session->connection;
     session->connection = NULL;
+    stat_map_cleanup(&session->app_stats);
     mtx_destroy(&session->streams_mutex);
     free(session);
     wtf_connection_release(conn);
@@ -533,11 +539,20 @@ bool wtf_session_process_capsule(wtf_session* session, const wtf_capsule* capsul
                   (unsigned long long)session->id);
 
     switch (capsule->type) {
+        case WTF_DRAFT02_DATAGRAM_CAPSULE:
+            if (wtf_connection_uses_original_draft02(session->connection)) {
+                return wtf_session_process_datagram(session, capsule->data, (size_t)capsule->length);
+            }
+            return true;
+
         case WTF_CAPSULE_DATAGRAM: {
             return true;
         }
 
         case WTF_CAPSULE_WT_MAX_DATA: {
+            if (!wtf_session_uses_flow_control(session)) {
+                return true;
+            }
             uint64_t max_data = 0;
             if (!wtf_session_decode_flow_control_value(session, capsule, &max_data)) {
                 wtf_session_fail_flow_control(session);
@@ -565,6 +580,9 @@ bool wtf_session_process_capsule(wtf_session* session, const wtf_capsule* capsul
 
         case WTF_CAPSULE_WT_MAX_STREAMS_BIDI:
         case WTF_CAPSULE_WT_MAX_STREAMS_UNI: {
+            if (!wtf_session_uses_flow_control(session)) {
+                return true;
+            }
             uint64_t max_streams = 0;
             if (!wtf_session_decode_flow_control_value(session, capsule, &max_streams)) {
                 wtf_session_fail_flow_control(session);
@@ -596,6 +614,9 @@ bool wtf_session_process_capsule(wtf_session* session, const wtf_capsule* capsul
         case WTF_CAPSULE_WT_DATA_BLOCKED:
         case WTF_CAPSULE_WT_STREAMS_BLOCKED_BIDI:
         case WTF_CAPSULE_WT_STREAMS_BLOCKED_UNI: {
+            if (!wtf_session_uses_flow_control(session)) {
+                return true;
+            }
             uint64_t blocked_at = 0;
             if (!wtf_session_decode_flow_control_value(session, capsule, &blocked_at)) {
                 wtf_session_fail_flow_control(session);
@@ -695,6 +716,7 @@ wtf_session* wtf_session_create(wtf_connection* conn, wtf_http3_stream* connect_
 
     memset(session, 0, sizeof(*session));
     atomic_init(&session->ref_count, 1);
+    atomic_init(&session->draft02_datagrams_registered, false);
     session->connection = conn;
     session->connect_stream = connect_stream;
     session->state = WTF_SESSION_HANDSHAKING;
@@ -717,6 +739,7 @@ wtf_session* wtf_session_create(wtf_connection* conn, wtf_http3_stream* connect_
         free(session);
         return NULL;
     }
+    stat_map_init(&session->app_stats);
 
     wtf_connection_add_ref(conn);
     return session;
@@ -862,6 +885,11 @@ static wtf_result_t wtf_session_send_datagram_internal(wtf_session* session,
     }
 
     conn = session->connection;
+    if (wtf_connection_uses_original_draft02(conn)
+        && !atomic_load_explicit(&session->draft02_datagrams_registered, memory_order_acquire)) {
+        result = WTF_ERROR_INVALID_STATE;
+        goto cleanup;
+    }
     if (!conn->peer_settings.h3_datagram_enabled) {
         result = WTF_ERROR_PROTOCOL_VIOLATION;
         goto cleanup;

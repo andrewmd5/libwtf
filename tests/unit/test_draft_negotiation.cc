@@ -25,7 +25,7 @@ TEST(DraftNegotiationRegression, AutoPrefersDraft15WhenExplicitlyAdvertised)
     peer.h3_datagram_rfc_enabled = true;
     peer.h3_datagram_draft04_enabled = true;
 
-    EXPECT_EQ(wtf_draft_select(WTF_ENDPOINT_CLIENT, WTF_WEBTRANSPORT_DRAFT_AUTO, &peer),
+    EXPECT_EQ(wtf_draft_select(WTF_WEBTRANSPORT_DRAFT_AUTO, &peer, true),
               WTF_WEBTRANSPORT_DRAFT_15);
 }
 
@@ -37,7 +37,7 @@ TEST(DraftNegotiationRegression, AutoFallsBackToDraft07BeforeDraft02)
     peer.h3_datagram_rfc_enabled = true;
     peer.h3_datagram_draft04_enabled = true;
 
-    EXPECT_EQ(wtf_draft_select(WTF_ENDPOINT_CLIENT, WTF_WEBTRANSPORT_DRAFT_AUTO, &peer),
+    EXPECT_EQ(wtf_draft_select(WTF_WEBTRANSPORT_DRAFT_AUTO, &peer, true),
               WTF_WEBTRANSPORT_DRAFT_07);
 }
 
@@ -48,25 +48,31 @@ TEST(DraftNegotiationRegression, ChromeDraft02SettingsDoNotSelectDraft15)
     peer.h3_datagram_rfc_enabled = true;
     peer.h3_datagram_draft04_enabled = true;
 
-    EXPECT_EQ(wtf_draft_select(WTF_ENDPOINT_SERVER, WTF_WEBTRANSPORT_DRAFT_AUTO, &peer),
+    EXPECT_EQ(wtf_draft_select(WTF_WEBTRANSPORT_DRAFT_AUTO, &peer, true),
               WTF_WEBTRANSPORT_DRAFT_02);
 }
 
-TEST(DraftNegotiationRegression, ServerMayInferDraft15OnlyWithoutLegacyWebTransportSettings)
+TEST(DraftNegotiationRegression, ReliableResetIsRequiredForDraft15)
 {
     wtf_settings peer = PeerSettings();
+    peer.enable_webtransport_draft15 = true;
+    peer.enable_webtransport_draft07 = true;
     peer.h3_datagram_rfc_enabled = true;
 
-    EXPECT_EQ(wtf_draft_select(WTF_ENDPOINT_SERVER, WTF_WEBTRANSPORT_DRAFT_AUTO, &peer),
-              WTF_WEBTRANSPORT_DRAFT_15);
+    EXPECT_EQ(wtf_draft_select(WTF_WEBTRANSPORT_DRAFT_AUTO, &peer, false),
+              WTF_WEBTRANSPORT_DRAFT_07);
+    EXPECT_EQ(wtf_draft_select(WTF_WEBTRANSPORT_DRAFT_15, &peer, false),
+              WTF_WEBTRANSPORT_DRAFT_NONE);
 }
 
-TEST(DraftNegotiationRegression, ClientDoesNotInferDraft15FromDatagramOnly)
+TEST(DraftNegotiationRegression, RfcDatagramsAloneDoNotSelectDraft15)
 {
     wtf_settings peer = PeerSettings();
     peer.h3_datagram_rfc_enabled = true;
 
-    EXPECT_EQ(wtf_draft_select(WTF_ENDPOINT_CLIENT, WTF_WEBTRANSPORT_DRAFT_AUTO, &peer),
+    EXPECT_EQ(wtf_draft_select(WTF_WEBTRANSPORT_DRAFT_AUTO, &peer, true),
+              WTF_WEBTRANSPORT_DRAFT_NONE);
+    EXPECT_EQ(wtf_draft_select(WTF_WEBTRANSPORT_DRAFT_15, &peer, true),
               WTF_WEBTRANSPORT_DRAFT_NONE);
 }
 
@@ -76,16 +82,16 @@ TEST(DraftNegotiationRegression, ExplicitDraftRequiresMatchingPeerSupport)
     peer.enable_webtransport_draft02 = true;
     peer.h3_datagram_draft04_enabled = true;
 
-    EXPECT_EQ(wtf_draft_select(WTF_ENDPOINT_CLIENT, WTF_WEBTRANSPORT_DRAFT_02, &peer),
+    EXPECT_EQ(wtf_draft_select(WTF_WEBTRANSPORT_DRAFT_02, &peer, true),
               WTF_WEBTRANSPORT_DRAFT_02);
-    EXPECT_EQ(wtf_draft_select(WTF_ENDPOINT_CLIENT, WTF_WEBTRANSPORT_DRAFT_07, &peer),
+    EXPECT_EQ(wtf_draft_select(WTF_WEBTRANSPORT_DRAFT_07, &peer, true),
               WTF_WEBTRANSPORT_DRAFT_NONE);
-    EXPECT_EQ(wtf_draft_select(WTF_ENDPOINT_CLIENT, WTF_WEBTRANSPORT_DRAFT_15, &peer),
+    EXPECT_EQ(wtf_draft_select(WTF_WEBTRANSPORT_DRAFT_15, &peer, true),
               WTF_WEBTRANSPORT_DRAFT_NONE);
 }
 
 TEST(DraftNegotiationRegression, NullPeerSettingsSelectNoDraft)
 {
-    EXPECT_EQ(wtf_draft_select(WTF_ENDPOINT_CLIENT, WTF_WEBTRANSPORT_DRAFT_AUTO, nullptr),
+    EXPECT_EQ(wtf_draft_select(WTF_WEBTRANSPORT_DRAFT_AUTO, nullptr, true),
               WTF_WEBTRANSPORT_DRAFT_NONE);
 }

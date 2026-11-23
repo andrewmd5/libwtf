@@ -7,9 +7,8 @@
 extern "C" {
 #endif
 
-wtf_webtransport_draft_t wtf_draft_select(wtf_endpoint_role_t role,
-                                           wtf_webtransport_draft_t requested,
-                                           const wtf_settings* peer_settings);
+wtf_webtransport_draft_t wtf_draft_select(wtf_webtransport_draft_t requested,
+                                         const wtf_settings* peer_settings, bool reliable_reset);
 
 #ifdef __cplusplus
 }

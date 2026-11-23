@@ -4,6 +4,7 @@
 #include <lsxpack_header.h>
 #include <msquic.h>
 #include <stdatomic.h>
+#include <stdlib.h>
 #include <tinycthread.h>
 
 #include "wtf.h"
@@ -68,12 +69,12 @@ typedef enum {
     WTF_SETTING_WT_INITIAL_MAX_STREAMS_BIDI = 0x2b65,
     WTF_SETTING_ENABLE_WEBTRANSPORT_DRAFT02 = 0x2b603742,
     WTF_SETTING_WEBTRANSPORT_MAX_SESSIONS_DRAFT07 = 0xc671706a,
-    WTF_SETTING_WT_ENABLED_DRAFT15 = 0x2c7cf000,
-    WTF_SETTING_WT_MAX_SESSIONS = 0x14e9cd29
+    WTF_SETTING_WT_ENABLED_DRAFT15 = 0x2c7cf000
 } wtf_h3_setting_t;
 
 #define WTF_QPACK_DYNAMIC_TABLE_SIZE 4096
-#define WTF_QPACK_MAX_BLOCKED_STREAMS 100
+// The decoder does not resume a field section that waits for dynamic table entries.
+#define WTF_QPACK_MAX_BLOCKED_STREAMS 0
 
 #define WTF_WEBTRANSPORT_PROTOCOL_DRAFT15 "webtransport-h3"
 #define WTF_WEBTRANSPORT_PROTOCOL_DRAFT02 "webtransport"
@@ -81,6 +82,9 @@ typedef enum {
 #define WTF_WEBTRANSPORT_DRAFT02_REQUEST_VALUE "1"
 #define WTF_WEBTRANSPORT_DRAFT02_RESPONSE_HEADER "sec-webtransport-http3-draft"
 #define WTF_WEBTRANSPORT_DRAFT02_RESPONSE_VALUE "draft02"
+#define WTF_DRAFT02_DATAGRAM_FORMAT 0xff7c00
+#define WTF_DRAFT02_REGISTER_DATAGRAM 0xff37a2
+#define WTF_DRAFT02_DATAGRAM_CAPSULE 0xff37a5
 #define WTF_CONNECT_METHOD "CONNECT"
 #define WTF_HTTPS_SCHEME "https"
 
@@ -160,6 +164,19 @@ WTF_STATIC_ASSERT(offsetof(wtf_buffer_t, data) == offsetof(QUIC_BUFFER, Buffer),
 #define CMPR_FN vt_cmpr_integer
 #include "verstable.h"
 
+static inline void wtf_stat_key_free(const char* key)
+{
+    free((void*)key);
+}
+
+#define NAME stat_map
+#define KEY_TY const char*
+#define VAL_TY uint64_t
+#define HASH_FN vt_hash_string
+#define CMPR_FN vt_cmpr_string
+#define KEY_DTOR_FN wtf_stat_key_free
+#include "verstable.h"
+
 typedef enum {
     WTF_CONNECTION_STATE_HANDSHAKING,
     WTF_CONNECTION_STATE_READY,
@@ -179,7 +196,10 @@ typedef enum {
 typedef enum {
     WTF_HTTP3_STREAM_FLAG_NONE = 0,
     WTF_HTTP3_STREAM_FLAG_CLIENT_CONNECT = 1u << 0,
-    WTF_HTTP3_STREAM_FLAG_CLIENT_CONNECT_SENT = 1u << 1
+    WTF_HTTP3_STREAM_FLAG_CLIENT_CONNECT_SENT = 1u << 1,
+    WTF_HTTP3_STREAM_FLAG_BIDI_HTTP3 = 1u << 2,
+    // Set after request HEADERS on the server or a successful final response on the client.
+    WTF_HTTP3_STREAM_FLAG_CONNECT_HEADERS_COMPLETE = 1u << 3
 } wtf_http3_stream_flags_t;
 
 typedef enum {
@@ -241,9 +261,6 @@ typedef struct wtf_settings {
     uint64_t wt_initial_max_data;
     uint64_t wt_initial_max_streams_bidi;
     uint64_t wt_initial_max_streams_uni;
-    bool wt_initial_max_data_received;
-    bool wt_initial_max_streams_bidi_received;
-    bool wt_initial_max_streams_uni_received;
     bool h3_datagram_enabled;
     bool h3_datagram_rfc_enabled;
     bool h3_datagram_draft04_enabled;
@@ -330,6 +347,7 @@ typedef struct wtf_http3_stream {
     uint8_t* pending_connect_header_block;
     size_t pending_connect_header_length;
     bool has_pending_connect_header_block;
+    bool draft02_datagrams_registered; // Protected by the connection's sessions mutex.
     struct wtf_http3_stream* next_client_pending_connect;
 
     uint64_t capsule_type;
@@ -344,12 +362,14 @@ typedef struct wtf_http3_stream {
 
 typedef struct wtf_session {
     atomic_uint ref_count;
+    atomic_bool draft02_datagrams_registered;
     bool destroyed;
     wtf_connection* connection;
     wtf_http3_stream* connect_stream;
     wtf_session_state_t state;
     uint64_t id;
     bool retired;
+    bool client_connect_started;
 
     wtf_session_callback_t callback;
     void* user_context;
@@ -370,6 +390,7 @@ typedef struct wtf_session {
     uint64_t received_data;
     uint64_t sent_data;
     mtx_t streams_mutex;
+    stat_map app_stats;
 
     uint32_t close_error_code;
     char* close_reason;
@@ -380,6 +401,11 @@ typedef struct wtf_connection {
     bool destroyed;
     uint64_t id;
     HQUIC quic_connection;
+    mtx_t transport_mutex;
+    cnd_t transport_idle;
+    size_t transport_readers;
+    bool transport_closing;
+    HQUIC deferred_transport_close;
     wtf_context* context;
     wtf_endpoint_role_t role;
     wtf_server* server;
@@ -400,9 +426,8 @@ typedef struct wtf_connection {
     wtf_http3_stream* control_stream;
     wtf_http3_stream* qpack_encoder_stream;
     wtf_http3_stream* qpack_decoder_stream;
-    wtf_http3_stream* peer_control_stream;
-    wtf_http3_stream* peer_encoder_stream;
-    wtf_http3_stream* peer_decoder_stream;
+    uint8_t peer_critical_stream_types; // Retained for the lifetime of the connection.
+    bool http3_failed;
     http3_stream_map streams;
     mtx_t streams_mutex;
 
@@ -457,6 +482,7 @@ typedef struct wtf_client {
     wtf_http3_stream* pending_connect_tail;
     uint32_t pending_connect_count;
     uint32_t opened_session_count;
+    uint32_t started_session_count;
 
     wtf_client_flags_t flags;
 

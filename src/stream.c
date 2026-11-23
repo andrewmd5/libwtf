@@ -1,5 +1,7 @@
 #include "stream.h"
 
+#include "conn.h"
+
 #include "log.h"
 #include "session.h"
 #include "utils.h"
@@ -244,11 +246,15 @@ static void wtf_stream_handle_reset(wtf_stream* stream, QUIC_UINT62 error_code)
     mtx_unlock(&stream->mutex);
 
     if (stream->callback) {
+        uint32_t app_error = wtf_map_h3_error_to_webtransport(error_code);
+        if (app_error > UINT8_MAX && wtf_connection_uses_original_draft02(stream->session->connection)) {
+            app_error = 0;
+        }
         wtf_stream_event_t event = {
             .type = WTF_STREAM_EVENT_ABORTED,
             .stream = (wtf_stream_t*)stream,
             .user_context = stream->user_context,
-            .aborted = {.error_code = wtf_map_h3_error_to_webtransport(error_code)}};
+            .aborted = {.error_code = app_error}};
         stream->callback(&event);
     }
 }
@@ -840,6 +846,10 @@ wtf_result_t wtf_stream_abort(wtf_stream_t* stream, uint32_t error_code)
     if (strm->destroyed || !strm->session || strm->session->destroyed
         || !strm->session->connection || strm->session->connection->destroyed) {
         return WTF_ERROR_INVALID_STATE;
+    }
+
+    if (error_code > UINT8_MAX && wtf_connection_uses_original_draft02(strm->session->connection)) {
+        return WTF_ERROR_INVALID_PARAMETER;
     }
 
     WTF_LOG_DEBUG(strm->session->connection->context, "stream",

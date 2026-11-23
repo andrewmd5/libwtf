@@ -243,6 +243,10 @@ static wtf_result_t wtf_copy_client_config(wtf_client* client, const wtf_client_
     if (config && config->enable_0rtt && !wtf_network_supports_early_data()) {
         return WTF_ERROR_NOT_SUPPORTED;
     }
+#elif !defined(QUIC_API_ENABLE_PREVIEW_FEATURES)
+    if (config && config->draft == WTF_WEBTRANSPORT_DRAFT_15) {
+        return WTF_ERROR_NOT_SUPPORTED;
+    }
 #endif
     if (!client || !config || !config->url || !wtf_client_valid_draft(config->draft)
         || !wtf_client_valid_congestion_control(config->congestion_control)) {
@@ -358,7 +362,7 @@ void wtf_client_mark_transport_ready(wtf_client* client)
     mtx_unlock(&client->mutex);
 }
 
-void wtf_client_note_session_closed(wtf_client* client)
+void wtf_client_note_session_closed(wtf_client* client, const wtf_session* session)
 {
     if (!client) {
         return;
@@ -367,6 +371,9 @@ void wtf_client_note_session_closed(wtf_client* client)
     mtx_lock(&client->mutex);
     if (client->opened_session_count > 0) {
         client->opened_session_count--;
+    }
+    if (session->client_connect_started) {
+        client->started_session_count--;
     }
     mtx_unlock(&client->mutex);
 }
@@ -391,7 +398,7 @@ void wtf_client_fail_pending_sessions(wtf_client* client, wtf_result_t result, c
         wtf_session* session = head->webtransport_session;
         if (session && session->state != WTF_SESSION_CLOSED) {
             session->state = WTF_SESSION_CLOSED;
-            wtf_client_note_session_closed(client);
+            wtf_session_retire(session);
             if (session->callback) {
                 wtf_session_event_t event = {
                     .type = WTF_SESSION_EVENT_DISCONNECTED,
@@ -429,7 +436,7 @@ static wtf_result_t wtf_client_start_connection(wtf_client* cli)
                                             QUIC_ADDRESS_FAMILY_UNSPEC, cli->host,
                                             cli->port);
     if (QUIC_FAILED(status)) {
-        ctx->quic_api->ConnectionClose(cli->quic_connection);
+        wtf_connection_close_transport(conn, false);
         cli->quic_connection = NULL;
         cli->connection = NULL;
         wtf_connection_release(conn);
@@ -752,12 +759,8 @@ void wtf_client_destroy(wtf_client_t* client)
     }
     mtx_unlock(&cli->mutex);
 
-    if (connection && ctx && ctx->quic_api) {
-        ctx->quic_api->ConnectionShutdown(connection, QUIC_CONNECTION_SHUTDOWN_FLAG_NONE, 0);
-        ctx->quic_api->ConnectionClose(connection);
-    }
-
     if (cli->connection) {
+        wtf_connection_close_transport(cli->connection, true);
         wtf_connection_destroy(cli->connection);
         cli->connection = NULL;
     }
