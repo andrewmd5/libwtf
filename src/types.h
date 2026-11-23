@@ -4,6 +4,7 @@
 #include <lsxpack_header.h>
 #include <msquic.h>
 #include <stdatomic.h>
+#include <stdlib.h>
 #include <tinycthread.h>
 
 #include "wtf.h"
@@ -158,6 +159,19 @@ WTF_STATIC_ASSERT(offsetof(wtf_buffer_t, data) == offsetof(QUIC_BUFFER, Buffer),
 #define VAL_TY wtf_connection*
 #define HASH_FN vt_hash_integer
 #define CMPR_FN vt_cmpr_integer
+#include "verstable.h"
+
+static inline void wtf_stat_key_free(const char* key)
+{
+    free((void*)key);
+}
+
+#define NAME stat_map
+#define KEY_TY const char*
+#define VAL_TY uint64_t
+#define HASH_FN vt_hash_string
+#define CMPR_FN vt_cmpr_string
+#define KEY_DTOR_FN wtf_stat_key_free
 #include "verstable.h"
 
 typedef enum {
@@ -370,6 +384,7 @@ typedef struct wtf_session {
     uint64_t received_data;
     uint64_t sent_data;
     mtx_t streams_mutex;
+    stat_map app_stats;
 
     uint32_t close_error_code;
     char* close_reason;
@@ -380,6 +395,11 @@ typedef struct wtf_connection {
     bool destroyed;
     uint64_t id;
     HQUIC quic_connection;
+    mtx_t transport_mutex;
+    cnd_t transport_idle;
+    size_t transport_readers;
+    bool transport_closing;
+    HQUIC deferred_transport_close;
     wtf_context* context;
     wtf_endpoint_role_t role;
     wtf_server* server;

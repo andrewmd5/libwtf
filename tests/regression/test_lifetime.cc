@@ -231,6 +231,61 @@ TEST_F(LifetimeRegression, StreamCreationInstallsCallbackBeforeStarting)
     wtf_stream_unref(stream);
 }
 
+TEST_F(LifetimeRegression, CustomStatsOwnTheirKeysAndStayWithTheirSession)
+{
+    auto* first = Session();
+    auto* second = Session();
+    char key[] = "app.frames";
+    ASSERT_EQ(WTF_SUCCESS, wtf_session_set_stat(first, key, 4));
+    key[4] = 'x';
+
+    uint64_t value = 99;
+    ASSERT_EQ(WTF_SUCCESS, wtf_session_get_stat(first, "app.frames", &value));
+    EXPECT_EQ(4u, value);
+    EXPECT_EQ(WTF_ERROR_NOT_FOUND, wtf_session_get_stat(second, "app.frames", &value));
+    EXPECT_EQ(4u, value);
+    EXPECT_EQ(WTF_ERROR_NOT_FOUND, wtf_session_get_stat(first, "quic.unknown", &value));
+    EXPECT_EQ(WTF_ERROR_INVALID_PARAMETER,
+              wtf_session_set_stat(first, "quic.packets_sent", 1));
+    EXPECT_EQ(WTF_ERROR_INVALID_PARAMETER, wtf_session_remove_stat(first, "app."));
+    EXPECT_EQ(WTF_ERROR_INVALID_PARAMETER, wtf_session_get_stat(first, "app.frames", nullptr));
+
+    ASSERT_EQ(WTF_SUCCESS, wtf_session_set_stat(first, "app.frames", 0));
+    wtf_session_shutdown(first, 0, "closed");
+    ASSERT_EQ(WTF_SUCCESS, wtf_session_get_stat(first, "app.frames", &value));
+    EXPECT_EQ(0u, value);
+    EXPECT_EQ(WTF_SUCCESS, wtf_session_remove_stat(first, "app.frames"));
+    EXPECT_EQ(WTF_ERROR_NOT_FOUND, wtf_session_remove_stat(first, "app.frames"));
+}
+
+TEST_F(LifetimeRegression, TransportCloseWaitsForStatisticsQuery)
+{
+    auto* session = Session();
+    conn->server = nullptr;
+    conn->quic_connection = reinterpret_cast<HQUIC>(conn);
+    api.ConnectionClose = [](HQUIC) { ++closed_handles; };
+    api.GetParam = [](HQUIC handle, uint32_t param, uint32_t*, void* buffer) -> QUIC_STATUS {
+        if (param != QUIC_PARAM_CONN_STATISTICS_V2) {
+            return QUIC_STATUS_NOT_SUPPORTED;
+        }
+        QUIC_CONNECTION_EVENT closed = {};
+        closed.Type = QUIC_CONNECTION_EVENT_SHUTDOWN_COMPLETE;
+        auto* connection = reinterpret_cast<wtf_connection*>(handle);
+        wtf_connection_callback(handle, connection, &closed);
+        EXPECT_EQ(0u, closed_handles);
+        auto* stats = static_cast<QUIC_STATISTICS_V2*>(buffer);
+        stats->SendSuspectedLostPackets = 10;
+        stats->SendSpuriousLostPackets = 4;
+        return QUIC_STATUS_SUCCESS;
+    };
+
+    uint64_t value = 0;
+    ASSERT_EQ(WTF_SUCCESS, wtf_session_get_stat(session, "quic.packets_lost", &value));
+    EXPECT_EQ(6u, value);
+    EXPECT_EQ(1u, closed_handles);
+    EXPECT_EQ(WTF_ERROR_INVALID_STATE, wtf_session_get_stat(session, "quic.packets_lost", &value));
+}
+
 TEST_F(LifetimeRegression, StreamCreationAllowsNullCallback)
 {
     auto* session = Session();

@@ -171,6 +171,41 @@ static int validate_session_max_datagram_size(const char* label, wtf_session_t* 
     return 0;
 }
 
+static int validate_connection_stats(wtf_session_t* session)
+{
+    static const struct {
+        const char* key;
+        bool must_be_nonzero;
+    } stats[] = {
+        {"quic.smoothed_rtt_us", true},
+        {"quic.min_rtt_us", true},
+        {"quic.rtt_variance_us", false},
+        {"quic.congestion_window_bytes", true},
+        {"quic.path_mtu_bytes", true},
+        {"quic.congestion_events", false},
+        {"quic.packets_sent", true},
+        {"quic.packets_lost", false},
+        {"quic.bytes_sent", true},
+        {"quic.bytes_received", true},
+    };
+
+    for (size_t i = 0; i < sizeof(stats) / sizeof(stats[0]); ++i) {
+        uint64_t value = 0;
+        wtf_result_t result = wtf_session_get_stat(session, stats[i].key, &value);
+#ifdef WTF_QUIC_BACKEND_NETWORK
+        bool valid = result == WTF_ERROR_NOT_SUPPORTED;
+#else
+        bool valid = result == WTF_SUCCESS && (!stats[i].must_be_nonzero || value != 0);
+#endif
+        if (!valid) {
+            fprintf(stderr, "e2e: unexpected statistic %s: %s (%llu)\n", stats[i].key,
+                    wtf_result_to_string(result), (unsigned long long)value);
+            return 1;
+        }
+    }
+    return 0;
+}
+
 static int make_cert_path(char* buffer, size_t buffer_length, const char* filename)
 {
     int len = snprintf(buffer, buffer_length, "%s/%s", WTF_TEST_CERT_DIR, filename);
@@ -264,13 +299,22 @@ static int run_dedicated_pinned_client(wtf_context_t* context, e2e_state_t* stat
     if (!failure) {
         failure = validate_session_max_datagram_size("dedicated client", session);
     }
+    if (!failure) {
+        failure = validate_connection_stats(session);
+    }
     if (!failure && atomic_load(&state->server_max_datagram_size) == 0) {
         fprintf(stderr, "e2e: server max datagram size was unavailable\n");
         failure = 1;
     }
-    wtf_session_unref(session);
     wtf_client_disconnect(client, 0, "pinned phase complete");
     wtf_client_destroy(client);
+    uint64_t value = 0;
+    if (!failure && wtf_session_get_stat(session, "quic.packets_sent", &value)
+            != WTF_ERROR_INVALID_STATE) {
+        fprintf(stderr, "e2e: connection statistics remained available after client teardown\n");
+        failure = 1;
+    }
+    wtf_session_unref(session);
     return failure;
 }
 

@@ -768,6 +768,34 @@ WTF_API wtf_session_state_t wtf_session_get_state(wtf_session_t* session);
 WTF_API wtf_result_t wtf_session_get_peer_address(wtf_session_t* session, void* address_buffer,
                                                   size_t* buffer_size);
 
+//! Read a statistic by its case-sensitive key. The value is written only on success.
+//! The following read-only keys describe the underlying QUIC connection and are shared by
+//! pooled sessions. Each call samples one key.
+//! | Key | Meaning |
+//! | --- | --- |
+//! | quic.smoothed_rtt_us | Smoothed round-trip time in microseconds |
+//! | quic.min_rtt_us | Minimum observed round-trip time in microseconds |
+//! | quic.rtt_variance_us | Round-trip time variation in microseconds |
+//! | quic.congestion_window_bytes | Send congestion window in bytes |
+//! | quic.path_mtu_bytes | Current path MTU in bytes |
+//! | quic.congestion_events | Send congestion events |
+//! | quic.packets_sent | QUIC packets sent |
+//! | quic.packets_lost | QUIC packets declared lost and not later acknowledged |
+//! | quic.bytes_sent | UDP payload bytes sent |
+//! | quic.bytes_received | UDP payload bytes received |
+//! Custom keys starting with app. belong to the individual session and can be read for as long
+//! as the caller holds a session reference, including after disconnect.
+//! @return WTF_ERROR_NOT_FOUND for an unknown or unset key, WTF_ERROR_INVALID_STATE if the
+//! connection is gone, or WTF_ERROR_NOT_SUPPORTED if the backend cannot supply a known metric.
+WTF_API wtf_result_t wtf_session_get_stat(wtf_session_t* session, const char* key, uint64_t* value);
+
+//! Insert or replace a custom statistic. The case-sensitive key must start with app. and
+//! include a suffix. The session owns a copy of the key.
+WTF_API wtf_result_t wtf_session_set_stat(wtf_session_t* session, const char* key, uint64_t value);
+
+//! Remove a custom app. statistic. Returns WTF_ERROR_NOT_FOUND if the key is unset.
+WTF_API wtf_result_t wtf_session_remove_stat(wtf_session_t* session, const char* key);
+
 //! Set session user context
 //! Intended for setup-time use before concurrent callbacks are active.
 //! @param session target session

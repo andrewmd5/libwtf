@@ -438,6 +438,7 @@ void wtf_session_release(wtf_session* session)
 
     wtf_connection* conn = session->connection;
     session->connection = NULL;
+    stat_map_cleanup(&session->app_stats);
     mtx_destroy(&session->streams_mutex);
     free(session);
     wtf_connection_release(conn);
@@ -717,6 +718,7 @@ wtf_session* wtf_session_create(wtf_connection* conn, wtf_http3_stream* connect_
         free(session);
         return NULL;
     }
+    stat_map_init(&session->app_stats);
 
     wtf_connection_add_ref(conn);
     return session;

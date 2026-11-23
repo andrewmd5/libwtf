@@ -28,11 +28,14 @@ EXPORTS
     wtf_session_send_datagram_copy
     wtf_session_ref
     wtf_session_unref
-    wtf_session_get_max_datagram_size
     wtf_session_set_callback
+    wtf_session_get_max_datagram_size
     wtf_session_create_stream
     wtf_session_get_state
     wtf_session_get_peer_address
+    wtf_session_get_stat
+    wtf_session_set_stat
+    wtf_session_remove_stat
     wtf_session_set_context
     wtf_session_get_context
     wtf_stream_send

@@ -229,21 +229,19 @@ static wtf_connection* wtf_connection_create_common(wtf_context* context, HQUIC 
     }
 
     if (mtx_init(&conn->sessions_mutex, mtx_plain) != thrd_success) {
-        mtx_destroy(&conn->streams_mutex);
-        session_map_cleanup(&conn->sessions);
-        http3_stream_map_cleanup(&conn->streams);
-        free(conn);
-        return NULL;
+        goto cleanup_streams_mutex;
+    }
+    if (mtx_init(&conn->transport_mutex, mtx_plain) != thrd_success) {
+        goto cleanup_sessions_mutex;
+    }
+    if (cnd_init(&conn->transport_idle) != thrd_success) {
+        goto cleanup_transport_mutex;
     }
 
     if (!wtf_qpack_preinit(&conn->qpack, WTF_QPACK_DYNAMIC_TABLE_SIZE,
                            WTF_QPACK_MAX_BLOCKED_STREAMS)) {
-        mtx_destroy(&conn->sessions_mutex);
-        mtx_destroy(&conn->streams_mutex);
-        session_map_cleanup(&conn->sessions);
-        http3_stream_map_cleanup(&conn->streams);
-        free(conn);
-        return NULL;
+        cnd_destroy(&conn->transport_idle);
+        goto cleanup_transport_mutex;
     }
 
     if (quic_connection && context && context->quic_api) {
@@ -252,6 +250,17 @@ static wtf_connection* wtf_connection_create_common(wtf_context* context, HQUIC 
                                     &conn->peer_address);
     }
     return conn;
+
+cleanup_transport_mutex:
+    mtx_destroy(&conn->transport_mutex);
+cleanup_sessions_mutex:
+    mtx_destroy(&conn->sessions_mutex);
+cleanup_streams_mutex:
+    mtx_destroy(&conn->streams_mutex);
+    session_map_cleanup(&conn->sessions);
+    http3_stream_map_cleanup(&conn->streams);
+    free(conn);
+    return NULL;
 }
 
 wtf_connection* wtf_connection_create(wtf_server* server, HQUIC quic_connection)
@@ -349,6 +358,8 @@ void wtf_connection_release(wtf_connection* conn)
     }
 
     wtf_connection_dispose(conn);
+    cnd_destroy(&conn->transport_idle);
+    mtx_destroy(&conn->transport_mutex);
     mtx_destroy(&conn->sessions_mutex);
     mtx_destroy(&conn->streams_mutex);
     free(conn);
@@ -362,6 +373,75 @@ void wtf_connection_destroy(wtf_connection* conn)
 
     wtf_connection_dispose(conn);
     wtf_connection_release(conn);
+}
+
+static void wtf_connection_finish_transport_close(wtf_connection* conn)
+{
+    mtx_lock(&conn->transport_mutex);
+    conn->quic_connection = NULL;
+    conn->transport_closing = false;
+    cnd_broadcast(&conn->transport_idle);
+    mtx_unlock(&conn->transport_mutex);
+}
+
+void wtf_connection_close_transport(wtf_connection* conn, bool shutdown)
+{
+    mtx_lock(&conn->transport_mutex);
+    while (conn->transport_closing) {
+        cnd_wait(&conn->transport_idle, &conn->transport_mutex);
+    }
+    HQUIC handle = conn->quic_connection;
+    if (!handle) {
+        mtx_unlock(&conn->transport_mutex);
+        return;
+    }
+    conn->transport_closing = true;
+    while (conn->transport_readers > 0) {
+        cnd_wait(&conn->transport_idle, &conn->transport_mutex);
+    }
+    mtx_unlock(&conn->transport_mutex);
+
+    const QUIC_API_TABLE* api = conn->context->quic_api;
+    if (shutdown) {
+        api->ConnectionShutdown(handle, QUIC_CONNECTION_SHUTDOWN_FLAG_NONE, 0);
+    }
+    api->ConnectionClose(handle);
+    wtf_connection_finish_transport_close(conn);
+}
+
+wtf_result_t wtf_connection_get_statistics(wtf_connection* conn, QUIC_STATISTICS_V2* stats,
+                                            uint32_t* size)
+{
+    mtx_lock(&conn->transport_mutex);
+    HQUIC handle = conn->quic_connection;
+    if (!handle || conn->transport_closing) {
+        mtx_unlock(&conn->transport_mutex);
+        return WTF_ERROR_INVALID_STATE;
+    }
+    const QUIC_API_TABLE* api = conn->context->quic_api;
+    QUIC_CONNECTION_CLOSE_FN close = api->ConnectionClose;
+    conn->transport_readers++;
+    mtx_unlock(&conn->transport_mutex);
+
+    // GetParam can wait for a worker that is delivering SHUTDOWN_COMPLETE.
+    // Pin the handle across the call without holding the mutex.
+    QUIC_STATUS status = api->GetParam(handle, QUIC_PARAM_CONN_STATISTICS_V2, size, stats);
+
+    HQUIC deferred = NULL;
+    mtx_lock(&conn->transport_mutex);
+    if (--conn->transport_readers == 0) {
+        deferred = conn->deferred_transport_close;
+        conn->deferred_transport_close = NULL;
+        cnd_broadcast(&conn->transport_idle);
+    }
+    mtx_unlock(&conn->transport_mutex);
+    if (deferred) {
+        close(deferred);
+        wtf_connection_finish_transport_close(conn);
+    }
+
+    return status == QUIC_STATUS_INVALID_STATE ? WTF_ERROR_INVALID_STATE
+                                               : wtf_quic_status_to_result(status);
 }
 
 QUIC_STATUS QUIC_API wtf_connection_callback(HQUIC Connection, void* Context,
@@ -547,19 +627,29 @@ QUIC_STATUS QUIC_API wtf_connection_callback(HQUIC Connection, void* Context,
 
             conn->state = WTF_CONNECTION_STATE_CLOSED;
 
+            wtf_connection_add_ref(conn);
+            const QUIC_API_TABLE* api = conn->context->quic_api;
+            mtx_lock(&conn->transport_mutex);
+            HQUIC handle = conn->quic_connection;
+            bool owns_close = handle && !conn->transport_closing
+                && !Event->SHUTDOWN_COMPLETE.AppCloseInProgress;
+            bool close_now = owns_close && conn->transport_readers == 0;
+            if (owns_close) {
+                conn->transport_closing = true;
+            }
+            conn->quic_connection = NULL;
+            mtx_unlock(&conn->transport_mutex);
+
             char reason[512] = {0};
             uint32_t reason_length = sizeof(reason);
-            if (conn->quic_connection &&
-                QUIC_SUCCEEDED(conn->context->quic_api->GetParam(
-                    conn->quic_connection, QUIC_PARAM_CONN_CLOSE_REASON_PHRASE,
-                    &reason_length, reason))) {
+            if (handle && QUIC_SUCCEEDED(api->GetParam(
+                    handle, QUIC_PARAM_CONN_CLOSE_REASON_PHRASE, &reason_length, reason))) {
                 reason[sizeof(reason) - 1] = '\0';
                 WTF_LOG_INFO(conn->context, "conn", "Connection shutdown reason: %s", reason);
             }
-            if (conn->quic_connection && !Event->SHUTDOWN_COMPLETE.AppCloseInProgress) {
-                conn->context->quic_api->ConnectionClose(conn->quic_connection);
+            if (close_now) {
+                api->ConnectionClose(handle);
             }
-            conn->quic_connection = NULL;
 
             if (conn->role == WTF_ENDPOINT_SERVER && conn->server) {
                 wtf_server* server = conn->server;
@@ -589,6 +679,23 @@ QUIC_STATUS QUIC_API wtf_connection_callback(HQUIC Connection, void* Context,
                                                  "Connection shutdown");
                 wtf_connection_release(conn);
             }
+            if (owns_close) {
+                if (close_now) {
+                    wtf_connection_finish_transport_close(conn);
+                } else {
+                    mtx_lock(&conn->transport_mutex);
+                    bool defer_close = conn->transport_readers > 0;
+                    if (defer_close) {
+                        conn->deferred_transport_close = handle;
+                    }
+                    mtx_unlock(&conn->transport_mutex);
+                    if (!defer_close) {
+                        api->ConnectionClose(handle);
+                        wtf_connection_finish_transport_close(conn);
+                    }
+                }
+            }
+            wtf_connection_release(conn);
             return QUIC_STATUS_SUCCESS;
         }
         case QUIC_CONNECTION_EVENT_IDEAL_PROCESSOR_CHANGED: {

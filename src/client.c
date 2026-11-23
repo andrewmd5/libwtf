@@ -429,7 +429,7 @@ static wtf_result_t wtf_client_start_connection(wtf_client* cli)
                                             QUIC_ADDRESS_FAMILY_UNSPEC, cli->host,
                                             cli->port);
     if (QUIC_FAILED(status)) {
-        ctx->quic_api->ConnectionClose(cli->quic_connection);
+        wtf_connection_close_transport(conn, false);
         cli->quic_connection = NULL;
         cli->connection = NULL;
         wtf_connection_release(conn);
@@ -752,12 +752,8 @@ void wtf_client_destroy(wtf_client_t* client)
     }
     mtx_unlock(&cli->mutex);
 
-    if (connection && ctx && ctx->quic_api) {
-        ctx->quic_api->ConnectionShutdown(connection, QUIC_CONNECTION_SHUTDOWN_FLAG_NONE, 0);
-        ctx->quic_api->ConnectionClose(connection);
-    }
-
     if (cli->connection) {
+        wtf_connection_close_transport(cli->connection, true);
         wtf_connection_destroy(cli->connection);
         cli->connection = NULL;
     }

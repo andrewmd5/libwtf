@@ -248,6 +248,10 @@ TEST(PublicApiSurface, SessionNullContracts)
     EXPECT_EQ(WTF_SESSION_CLOSED, wtf_session_get_state(nullptr));
     EXPECT_EQ(WTF_ERROR_INVALID_PARAMETER,
               wtf_session_get_peer_address(nullptr, nullptr, nullptr));
+    uint64_t stat = 0;
+    EXPECT_EQ(WTF_ERROR_INVALID_PARAMETER, wtf_session_get_stat(nullptr, "app.test", &stat));
+    EXPECT_EQ(WTF_ERROR_INVALID_PARAMETER, wtf_session_set_stat(nullptr, "app.test", 1));
+    EXPECT_EQ(WTF_ERROR_INVALID_PARAMETER, wtf_session_remove_stat(nullptr, "app.test"));
     EXPECT_EQ(0u, wtf_session_get_max_datagram_size(nullptr));
     EXPECT_EQ(nullptr, wtf_session_find_stream_by_id(nullptr, 1));
     EXPECT_EQ(nullptr, wtf_session_get_context(nullptr));

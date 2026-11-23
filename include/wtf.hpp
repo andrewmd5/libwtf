@@ -643,6 +643,37 @@ class SessionView {
     }
     //! Copy the peer's platform socket-address bytes into owned storage.
     [[nodiscard]] Result<ByteBuffer> PeerAddress() const;
+    //! Read a documented QUIC statistic or a custom app. statistic.
+    [[nodiscard]] Result<std::uint64_t> GetStat(std::string_view key) const {
+        if (key.find('\0') != std::string_view::npos) {
+            return std::unexpected(Error{.code = WTF_ERROR_INVALID_PARAMETER});
+        }
+        const std::string terminated(key);
+        std::uint64_t value = 0;
+        auto result = internal::ResultFromStatus(
+            wtf_session_get_stat(handle_, terminated.c_str(), &value)
+        );
+        if (!result) {
+            return std::unexpected(result.error());
+        }
+        return value;
+    }
+    //! Insert or replace a session-local app. statistic.
+    [[nodiscard]] Result<> SetStat(std::string_view key, std::uint64_t value) const {
+        if (key.find('\0') != std::string_view::npos) {
+            return std::unexpected(Error{.code = WTF_ERROR_INVALID_PARAMETER});
+        }
+        const std::string terminated(key);
+        return internal::ResultFromStatus(wtf_session_set_stat(handle_, terminated.c_str(), value));
+    }
+    //! Remove a session-local app. statistic.
+    [[nodiscard]] Result<> RemoveStat(std::string_view key) const {
+        if (key.find('\0') != std::string_view::npos) {
+            return std::unexpected(Error{.code = WTF_ERROR_INVALID_PARAMETER});
+        }
+        const std::string terminated(key);
+        return internal::ResultFromStatus(wtf_session_remove_stat(handle_, terminated.c_str()));
+    }
     //! Start a stream with handlers installed before transport activity begins.
     //! Handlers can run before this function returns; their StreamView is already
     //! usable.
@@ -850,6 +881,18 @@ class Session {
     //! @copydoc SessionView::PeerAddress
     [[nodiscard]] Result<ByteBuffer> PeerAddress() const {
         return view().PeerAddress();
+    }
+    //! @copydoc SessionView::GetStat
+    [[nodiscard]] Result<std::uint64_t> GetStat(std::string_view key) const {
+        return view().GetStat(key);
+    }
+    //! @copydoc SessionView::SetStat
+    [[nodiscard]] Result<> SetStat(std::string_view key, std::uint64_t value) const {
+        return view().SetStat(key, value);
+    }
+    //! @copydoc SessionView::RemoveStat
+    [[nodiscard]] Result<> RemoveStat(std::string_view key) const {
+        return view().RemoveStat(key);
     }
     //! @copydoc SessionView::OpenStream
     [[nodiscard]] Result<Stream> OpenStream(

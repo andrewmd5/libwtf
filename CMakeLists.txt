@@ -353,6 +353,7 @@ set(WTF_SOURCES
     src/datagram.c
     src/stream.c
     src/session.c   
+    src/stats.c
     src/settings.c
     src/draft.c
     src/cert.c
