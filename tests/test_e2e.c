@@ -27,6 +27,7 @@ typedef struct {
     atomic_int server_connected;
     atomic_int server_disconnected;
     atomic_int client_seen_auth_response;
+    atomic_int client_seen_auth_rejection;
     atomic_int server_seen_auth_header;
     atomic_uint client_max_datagram_size;
     atomic_uint server_max_datagram_size;
@@ -51,6 +52,18 @@ static void sleep_ms(unsigned milliseconds)
 #endif
 }
 
+static bool has_header(const wtf_http_header_t* headers, size_t count,
+                       const char* name, const char* value)
+{
+    for (size_t i = 0; i < count; i++) {
+        if (headers[i].name && headers[i].value && strcmp(headers[i].name, name) == 0
+            && strcmp(headers[i].value, value) == 0) {
+            return true;
+        }
+    }
+    return false;
+}
+
 static void e2e_session_callback(const wtf_session_event_t* event)
 {
     if (!event || !event->user_context) {
@@ -65,13 +78,10 @@ static void e2e_session_callback(const wtf_session_event_t* event)
             if (callback_context->endpoint == E2E_ENDPOINT_CLIENT) {
                 atomic_store(&state->client_max_datagram_size,
                              wtf_session_get_max_datagram_size(event->session));
-                for (size_t i = 0; i < event->connected.header_count; i++) {
-                    const wtf_http_header_t* header = &event->connected.headers[i];
-                    if (header->name && header->value
-                        && strcmp(header->name, "x-auth-result") == 0
-                        && strcmp(header->value, "ok") == 0) {
-                        atomic_store(&state->client_seen_auth_response, 1);
-                    }
+                if (event->connected.status_code == 200
+                    && has_header(event->connected.headers, event->connected.header_count,
+                                  "x-auth-result", "ok")) {
+                    atomic_store(&state->client_seen_auth_response, 1);
                 }
                 atomic_fetch_add(&state->client_connected, 1);
             } else {
@@ -83,6 +93,12 @@ static void e2e_session_callback(const wtf_session_event_t* event)
 
         case WTF_SESSION_EVENT_DISCONNECTED:
             if (callback_context->endpoint == E2E_ENDPOINT_CLIENT) {
+                if (event->disconnected.status_code == 403
+                    && event->disconnected.error_code == WTF_ERROR_REJECTED
+                    && has_header(event->disconnected.headers, event->disconnected.header_count,
+                                  "x-auth-result", "denied")) {
+                    atomic_store(&state->client_seen_auth_rejection, 1);
+                }
                 atomic_fetch_add(&state->client_disconnected, 1);
             } else {
                 atomic_fetch_add(&state->server_disconnected, 1);
@@ -100,25 +116,15 @@ static wtf_connection_decision_t e2e_connection_validator(
 {
     e2e_callback_context_t* callback_context = user_data;
     e2e_state_t* state = callback_context ? callback_context->state : NULL;
-    bool has_auth = false;
-
-    for (size_t i = 0; request && i < request->header_count; i++) {
-        const wtf_http_header_t* header = &request->headers[i];
-        if (header->name && header->value && strcmp(header->name, "authorization") == 0
-            && strcmp(header->value, "Bearer libwtf-e2e") == 0) {
-            has_auth = true;
-            break;
-        }
-    }
-
-    if (!has_auth) {
+    if (!request || !has_header(request->headers, request->header_count,
+                                "authorization", "Bearer libwtf-e2e")) {
         return WTF_CONNECTION_ACCEPT;
     }
 
     if (state) {
         atomic_store(&state->server_seen_auth_header, 1);
         uintptr_t expected = 0;
-        if (request && request->handle
+        if (request->handle
             && atomic_compare_exchange_strong(&state->deferred_handle, &expected,
                                               (uintptr_t)request->handle)) {
             return WTF_CONNECTION_DEFER;
@@ -216,40 +222,83 @@ static int make_cert_path(char* buffer, size_t buffer_length, const char* filena
     return 0;
 }
 
-static int complete_deferred_auth(e2e_state_t* state)
+static int complete_deferred_auth(e2e_state_t* state, wtf_connection_decision_t decision)
 {
     for (int i = 0; i < 100; i++) {
-        uintptr_t handle_value = atomic_load(&state->deferred_handle);
-        if (handle_value != 0) {
-            wtf_connection_request_handle_t* handle
-                = (wtf_connection_request_handle_t*)handle_value;
-            wtf_result_t result = wtf_connection_request_add_response_header(
-                handle, "x-auth-result", "ok");
-            if (result != WTF_SUCCESS) {
-                fprintf(stderr, "e2e: deferred response header failed: %s\n",
-                        wtf_result_to_string(result));
-                return 1;
-            }
-
-            result = wtf_connection_request_complete(handle, WTF_CONNECTION_ACCEPT);
-            if (result != WTF_SUCCESS) {
-                fprintf(stderr, "e2e: deferred auth completion failed: %s\n",
-                        wtf_result_to_string(result));
-                return 1;
-            }
-            atomic_store(&state->deferred_handle, 0);
-            return 0;
+        uintptr_t handle_value = atomic_exchange(&state->deferred_handle, 0);
+        if (handle_value == 0) {
+            sleep_ms(50);
+            continue;
         }
-        sleep_ms(50);
+
+        wtf_connection_request_handle_t* handle = (wtf_connection_request_handle_t*)handle_value;
+        bool connected_before_decision = atomic_load(&state->client_connected) != 0
+            || atomic_load(&state->server_connected) != 0;
+        const char* auth_result = decision == WTF_CONNECTION_ACCEPT ? "ok" : "denied";
+        wtf_result_t header_result = wtf_connection_request_add_response_header(
+            handle, "x-auth-result", auth_result);
+        wtf_result_t result = wtf_connection_request_complete(handle, decision);
+        if (connected_before_decision) {
+            fprintf(stderr, "e2e: session connected before deferred auth completed\n");
+            return 1;
+        }
+        if (header_result != WTF_SUCCESS) {
+            fprintf(stderr, "e2e: deferred response header failed: %s\n",
+                    wtf_result_to_string(header_result));
+            return 1;
+        }
+        if (result != WTF_SUCCESS) {
+            fprintf(stderr, "e2e: deferred auth completion failed: %s\n",
+                    wtf_result_to_string(result));
+            return 1;
+        }
+        return 0;
     }
 
     fprintf(stderr, "e2e: timed out waiting for deferred auth request\n");
     return 1;
 }
 
-static int run_dedicated_pinned_client(wtf_context_t* context, e2e_state_t* state,
-                                       const char* url, const char* pinned_cert_file)
+static int validate_deferred_rejection(e2e_state_t* state)
 {
+    for (int i = 0; i < 100 && atomic_load(&state->client_disconnected) == 0; i++) {
+        sleep_ms(50);
+    }
+    if (!atomic_load(&state->client_seen_auth_rejection)) {
+        fprintf(stderr, "e2e: client did not receive the deferred 403 with its auth response header\n");
+        return 1;
+    }
+    if (atomic_load(&state->client_connected) != 0 || atomic_load(&state->server_connected) != 0) {
+        fprintf(stderr, "e2e: a rejected request established a session\n");
+        return 1;
+    }
+    return 0;
+}
+
+static int validate_deferred_acceptance(e2e_state_t* state, wtf_session_t* session)
+{
+    if (wait_for_counts(state, 1, 1)) {
+        return 1;
+    }
+    if (!atomic_load(&state->client_seen_auth_response)) {
+        fprintf(stderr, "e2e: client did not receive the deferred 200 with its auth response header\n");
+        return 1;
+    }
+    if (atomic_load(&state->server_max_datagram_size) == 0) {
+        fprintf(stderr, "e2e: server max datagram size was unavailable\n");
+        return 1;
+    }
+    if (validate_session_max_datagram_size("dedicated client", session)) {
+        return 1;
+    }
+    return validate_connection_stats(session);
+}
+
+static int run_dedicated_pinned_client(wtf_context_t* context, e2e_state_t* state,
+                                       const char* url, const char* pinned_cert_file,
+                                       wtf_connection_decision_t decision)
+{
+    atomic_store(&state->server_seen_auth_header, 0);
     e2e_callback_context_t client_events = {
         .state = state,
         .endpoint = E2E_ENDPOINT_CLIENT,
@@ -284,32 +333,20 @@ static int run_dedicated_pinned_client(wtf_context_t* context, e2e_state_t* stat
         return 1;
     }
 
-    int failure = complete_deferred_auth(state);
-    if (!failure) {
-        failure = wait_for_counts(state, 1, 1);
-    }
+    int failure = complete_deferred_auth(state, decision);
     if (!failure && atomic_load(&state->server_seen_auth_header) == 0) {
         fprintf(stderr, "e2e: server did not observe authorization header\n");
         failure = 1;
     }
-    if (!failure && atomic_load(&state->client_seen_auth_response) == 0) {
-        fprintf(stderr, "e2e: client did not observe auth response header\n");
-        failure = 1;
-    }
     if (!failure) {
-        failure = validate_session_max_datagram_size("dedicated client", session);
-    }
-    if (!failure) {
-        failure = validate_connection_stats(session);
-    }
-    if (!failure && atomic_load(&state->server_max_datagram_size) == 0) {
-        fprintf(stderr, "e2e: server max datagram size was unavailable\n");
-        failure = 1;
+        failure = decision == WTF_CONNECTION_ACCEPT ? validate_deferred_acceptance(state, session)
+                                                    : validate_deferred_rejection(state);
     }
     wtf_client_disconnect(client, 0, "pinned phase complete");
     wtf_client_destroy(client);
     uint64_t value = 0;
-    if (!failure && wtf_session_get_stat(session, "quic.packets_sent", &value)
+    if (!failure && decision == WTF_CONNECTION_ACCEPT
+        && wtf_session_get_stat(session, "quic.packets_sent", &value)
             != WTF_ERROR_INVALID_STATE) {
         fprintf(stderr, "e2e: connection statistics remained available after client teardown\n");
         failure = 1;
@@ -397,6 +434,7 @@ int main(void)
     atomic_init(&state.server_connected, 0);
     atomic_init(&state.server_disconnected, 0);
     atomic_init(&state.client_seen_auth_response, 0);
+    atomic_init(&state.client_seen_auth_rejection, 0);
     atomic_init(&state.server_seen_auth_header, 0);
     atomic_init(&state.client_max_datagram_size, 0);
     atomic_init(&state.server_max_datagram_size, 0);
@@ -455,7 +493,12 @@ int main(void)
     char url[128];
     snprintf(url, sizeof(url), "https://127.0.0.1:%u/", WTF_E2E_PORT);
 
-    int failure = run_dedicated_pinned_client(context, &state, url, cert_path);
+    int failure = run_dedicated_pinned_client(context, &state, url, cert_path,
+                                              WTF_CONNECTION_REJECT);
+    if (!failure) {
+        failure = run_dedicated_pinned_client(context, &state, url, cert_path,
+                                              WTF_CONNECTION_ACCEPT);
+    }
     if (!failure) {
         failure = run_pooled_client(context, &state, url, cert_path);
     }
