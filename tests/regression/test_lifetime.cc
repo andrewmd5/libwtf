@@ -1,6 +1,7 @@
 #include <gtest/gtest.h>
 
 #include <cstdint>
+#include <cstring>
 #include <vector>
 
 extern "C" {
@@ -256,6 +257,36 @@ TEST_F(LifetimeRegression, CustomStatsOwnTheirKeysAndStayWithTheirSession)
     EXPECT_EQ(0u, value);
     EXPECT_EQ(WTF_SUCCESS, wtf_session_remove_stat(first, "app.frames"));
     EXPECT_EQ(WTF_ERROR_NOT_FOUND, wtf_session_remove_stat(first, "app.frames"));
+}
+
+template <typename Bits, typename Value>
+void ExpectCustomStatRoundTrip(wtf_session_t* session, const char* key, Value original)
+{
+    static_assert(sizeof(Bits) == sizeof(Value));
+    SCOPED_TRACE(key);
+
+    Bits bits;
+    std::memcpy(&bits, &original, sizeof(bits));
+    ASSERT_EQ(WTF_SUCCESS, wtf_session_set_stat(session, key, bits));
+
+    uint64_t stored = 0;
+    ASSERT_EQ(WTF_SUCCESS, wtf_session_get_stat(session, key, &stored));
+    EXPECT_EQ(static_cast<uint64_t>(bits), stored);
+
+    Bits restored_bits = static_cast<Bits>(stored);
+    Value restored;
+    std::memcpy(&restored, &restored_bits, sizeof(restored));
+    EXPECT_EQ(original, restored);
+}
+
+TEST_F(LifetimeRegression, CustomStatsPreserveNumericBitPatterns)
+{
+    auto* session = Session();
+    ExpectCustomStatRoundTrip<uint32_t>(session, "app.float", -16.67f);
+    ExpectCustomStatRoundTrip<uint64_t>(session, "app.double", 1234.56789012345);
+    ExpectCustomStatRoundTrip<uint64_t>(session, "app.negative_zero", -0.0);
+    ExpectCustomStatRoundTrip<uint16_t>(session, "app.short", int16_t{-42});
+    ExpectCustomStatRoundTrip<uint64_t>(session, "app.counter", UINT64_MAX);
 }
 
 TEST_F(LifetimeRegression, TransportCloseWaitsForStatisticsQuery)
