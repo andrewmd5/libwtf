@@ -18,6 +18,14 @@ bool wtf_connection_associate_stream_with_session(wtf_connection* conn, wtf_http
 
     uint64_t stream_id = h3_stream->id;
     uint64_t session_id = session->id;
+    if (h3_stream->webtransport_session || stream_id == session_id
+        || (h3_stream->flags & WTF_HTTP3_STREAM_FLAG_CLIENT_CONNECT) != 0) {
+        WTF_LOG_ERROR(conn->context, "stream",
+                      "Cannot transfer CONNECT stream %llu to a WebTransport data stream",
+                      (unsigned long long)stream_id);
+        return false;
+    }
+
     wtf_stream_type_t stream_type = WTF_STREAM_IS_UNIDIRECTIONAL(stream_id)
         ? WTF_STREAM_UNIDIRECTIONAL
         : WTF_STREAM_BIDIRECTIONAL;
@@ -118,30 +126,19 @@ bool wtf_connection_associate_stream_with_session(wtf_connection* conn, wtf_http
         return false;
     }
     wtf_stream_add_ref(wt_stream);
+
+    HQUIC quic_stream = h3_stream->quic_stream;
+    if (quic_stream) {
+        wt_stream->quic_stream = quic_stream;
+        h3_stream->quic_stream = NULL;
+        h3_stream->callback_transferred = true;
+        wtf_stream_add_ref(wt_stream);
+    }
     mtx_unlock(&session->streams_mutex);
 
-    if (h3_stream->quic_stream) {
-        wt_stream->quic_stream = h3_stream->quic_stream;
-
-        bool is_connect_stream = (h3_stream->id == session->connect_stream->id);
-
-        if (!is_connect_stream) {
-            conn->context->quic_api->SetCallbackHandler(
-                h3_stream->quic_stream, wtf_upgraded_stream_callback, wt_stream);
-            wtf_stream_add_ref(wt_stream);
-            h3_stream->quic_stream = NULL;
-            h3_stream->callback_transferred = true;
-
-            WTF_LOG_DEBUG(conn->context, "stream",
-                          "Transferred QUIC handle and switched callback for "
-                          "WebTransport stream %llu",
-                          (unsigned long long)stream_id);
-        } else {
-            WTF_LOG_DEBUG(conn->context, "stream",
-                          "Transferred QUIC handle from CONNECT stream %llu "
-                          "(preserving wtf_stream_callback)",
-                          (unsigned long long)stream_id);
-        }
+    if (quic_stream) {
+        conn->context->quic_api->SetCallbackHandler(
+            quic_stream, wtf_upgraded_stream_callback, wt_stream);
     }
 
     WTF_LOG_DEBUG(conn->context, "stream",

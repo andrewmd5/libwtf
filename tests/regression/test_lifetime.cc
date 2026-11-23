@@ -2,6 +2,7 @@
 
 #include <cstdint>
 #include <cstring>
+#include <tuple>
 #include <vector>
 
 extern "C" {
@@ -11,6 +12,7 @@ extern "C" {
 #include "session.h"
 #include "stream.h"
 #include "utils.h"
+#include "varint.h"
 
 void wtf_test_echo_session(wtf_session_t*);
 void wtf_test_echo_stream(wtf_session_t*, wtf_stream_t*);
@@ -100,6 +102,26 @@ protected:
     }
 
     HQUIC Handle() { return reinterpret_cast<HQUIC>(next_handle++); }
+
+    wtf_http3_stream* Stream(uint64_t id)
+    {
+        auto* stream = wtf_http3_stream_create(conn, Handle(), id);
+        wtf_http3_stream_add_ref(stream);
+        connects.push_back(stream);
+        return stream;
+    }
+
+    void Receive(wtf_http3_stream* stream, std::vector<uint8_t> bytes, bool fin = false)
+    {
+        QUIC_BUFFER buffer = {static_cast<uint32_t>(bytes.size()), bytes.data()};
+        QUIC_STREAM_EVENT event = {};
+        event.Type = QUIC_STREAM_EVENT_RECEIVE;
+        event.RECEIVE.Buffers = &buffer;
+        event.RECEIVE.BufferCount = 1;
+        event.RECEIVE.TotalBufferLength = bytes.size();
+        event.RECEIVE.Flags = fin ? QUIC_RECEIVE_FLAG_FIN : QUIC_RECEIVE_FLAG_NONE;
+        EXPECT_EQ(QUIC_STATUS_SUCCESS, wtf_http3_stream_callback(stream->quic_stream, stream, &event));
+    }
 
     wtf_session* Session()
     {
@@ -598,26 +620,6 @@ protected:
             reinterpret_cast<std::vector<uint64_t>*>(handle)->push_back(code);
         };
     }
-
-    wtf_http3_stream* Stream(uint64_t id)
-    {
-        auto* stream = wtf_http3_stream_create(conn, Handle(), id);
-        wtf_http3_stream_add_ref(stream);
-        connects.push_back(stream);
-        return stream;
-    }
-
-    void Receive(wtf_http3_stream* stream, std::vector<uint8_t> bytes, bool fin = false)
-    {
-        QUIC_BUFFER buffer = {static_cast<uint32_t>(bytes.size()), bytes.data()};
-        QUIC_STREAM_EVENT event = {};
-        event.Type = QUIC_STREAM_EVENT_RECEIVE;
-        event.RECEIVE.Buffers = &buffer;
-        event.RECEIVE.BufferCount = 1;
-        event.RECEIVE.TotalBufferLength = bytes.size();
-        event.RECEIVE.Flags = fin ? QUIC_RECEIVE_FLAG_FIN : QUIC_RECEIVE_FLAG_NONE;
-        EXPECT_EQ(QUIC_STATUS_SUCCESS, wtf_http3_stream_callback(stream->quic_stream, stream, &event));
-    }
 };
 
 class CriticalStreamTypeRegression : public CriticalStreamRegression,
@@ -667,6 +669,15 @@ TEST_F(CriticalStreamRegression, SecondSettingsFrameIsUnexpected)
     EXPECT_EQ(std::vector<uint64_t>({WTF_H3_FRAME_UNEXPECTED}), connection_errors);
 }
 
+TEST_F(CriticalStreamRegression, WebTransportSignalIsInvalidOnControlStream)
+{
+    conn->peer_settings.settings_received = true;
+    uint8_t header[1 + sizeof(uint64_t)] = {WTF_STREAM_TYPE_CONTROL};
+    auto* end = wtf_varint_encode(WTF_FRAME_BIDIR_WEBTRANSPORT_STREAM, header + 1);
+    Receive(Stream(2), std::vector<uint8_t>(header, end));
+    EXPECT_EQ(std::vector<uint64_t>({WTF_H3_FRAME_ERROR}), connection_errors);
+}
+
 TEST_F(CriticalStreamRegression, TruncatedControlFrameOnFinIsAFrameError)
 {
     Receive(Stream(2), {WTF_STREAM_TYPE_CONTROL, WTF_FRAME_SETTINGS}, true);
@@ -712,6 +723,104 @@ TEST_F(CriticalStreamRegression, CriticalStreamCanFinishDuringConnectionTeardown
     connects.pop_back();
     wtf_http3_stream_callback(stream->quic_stream, stream, &event);
     EXPECT_TRUE(connection_errors.empty());
+}
+
+class WebTransportPrefixRegression : public LifetimeRegression,
+    public ::testing::WithParamInterface<std::tuple<wtf_endpoint_role_t, size_t>> {
+protected:
+    std::vector<uint8_t> payload;
+    HQUIC changed_callback = nullptr;
+    unsigned peer_closes = 0;
+
+    static void OnStreamEvent(const wtf_stream_event_t* event)
+    {
+        auto* test = static_cast<WebTransportPrefixRegression*>(event->user_context);
+        if (event->type == WTF_STREAM_EVENT_DATA_RECEIVED) {
+            for (uint32_t i = 0; i < event->data_received.buffer_count; ++i) {
+                const auto& buffer = event->data_received.buffers[i];
+                test->payload.insert(test->payload.end(), buffer.data, buffer.data + buffer.length);
+            }
+        } else if (event->type == WTF_STREAM_EVENT_PEER_CLOSED) {
+            ++test->peer_closes;
+        }
+    }
+
+    static void OnSessionEvent(const wtf_session_event_t* event)
+    {
+        if (event->type != WTF_SESSION_EVENT_STREAM_OPENED) {
+            return;
+        }
+        auto* test = static_cast<WebTransportPrefixRegression*>(event->user_context);
+        auto* stream = event->stream_opened.stream;
+        test->children.push_back(stream);
+        wtf_stream_set_callback(stream, OnStreamEvent);
+    }
+
+    static void QUIC_API ChangeCallback(HQUIC handle, void*, void* context)
+    {
+        auto* stream = static_cast<wtf_stream*>(context);
+        auto* test = static_cast<WebTransportPrefixRegression*>(stream->session->user_context);
+        EXPECT_EQ(nullptr, test->changed_callback);
+        test->changed_callback = handle;
+    }
+};
+
+TEST_P(WebTransportPrefixRegression, FragmentedPrefixDeliversPayloadAndFin)
+{
+    auto [role, split] = GetParam();
+    conn->role = role;
+    next_handle = 15; // The session uses a two-byte stream ID.
+    auto* session = Session();
+    HQUIC connect_handle = session->connect_stream->quic_stream;
+    session->user_context = this;
+    session->callback = OnSessionEvent;
+    api.SetCallbackHandler = ChangeCallback;
+
+    auto* stream = Stream(role == WTF_ENDPOINT_SERVER ? session->id + 4 : 1);
+    HQUIC data_handle = stream->quic_stream;
+    uint8_t bytes[2 * sizeof(uint64_t) + 1];
+    auto* end = wtf_varint_encode(WTF_FRAME_BIDIR_WEBTRANSPORT_STREAM, bytes);
+    end = wtf_varint_encode(session->id, end);
+    ASSERT_LT(split, static_cast<size_t>(end - bytes));
+    *end++ = 0x5a;
+
+    Receive(stream, std::vector<uint8_t>(bytes, bytes + split));
+    ASSERT_TRUE(children.empty());
+    EXPECT_FALSE(stream->is_webtransport);
+
+    wtf_http3_stream_add_ref(stream);
+    Receive(stream, std::vector<uint8_t>(bytes + split, end), true);
+    bool transferred = stream->callback_transferred;
+    if (transferred) {
+        connects.pop_back();
+    }
+    wtf_http3_stream_release(stream);
+
+    ASSERT_TRUE(transferred);
+    ASSERT_EQ(1u, children.size());
+    EXPECT_EQ(data_handle, changed_callback);
+    EXPECT_EQ(data_handle, children.front()->quic_stream);
+    EXPECT_EQ(connect_handle, session->connect_stream->quic_stream);
+    EXPECT_EQ(std::vector<uint8_t>({0x5a}), payload);
+    EXPECT_EQ(1u, peer_closes);
+}
+
+INSTANTIATE_TEST_SUITE_P(Http3, WebTransportPrefixRegression,
+    ::testing::Combine(::testing::Values(WTF_ENDPOINT_SERVER, WTF_ENDPOINT_CLIENT),
+                       ::testing::Values<size_t>(1, 2, 3)));
+
+TEST_F(LifetimeRegression, FragmentedGreaseFrameKeepsBidirectionalStreamInHttp3)
+{
+    auto* stream = Stream(4);
+    uint8_t frame[sizeof(uint64_t) + 1];
+    auto* end = wtf_varint_encode(0x40, frame);
+    *end++ = 0; // GREASE frame with an empty payload.
+
+    Receive(stream, {frame[0]});
+    EXPECT_EQ(0u, stream->flags & WTF_HTTP3_STREAM_FLAG_BIDI_HTTP3);
+    Receive(stream, std::vector<uint8_t>(frame + 1, end));
+    EXPECT_NE(0u, stream->flags & WTF_HTTP3_STREAM_FLAG_BIDI_HTTP3);
+    EXPECT_FALSE(stream->is_webtransport);
 }
 
 TEST_F(LifetimeRegression, QuicStreamAvailabilityDoesNotGrantWebTransportCredit)
