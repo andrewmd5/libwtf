@@ -423,7 +423,6 @@ target_compile_definitions(wtf PRIVATE WTF_EXPORTS)
 
 if(NOT WIN32)
     target_compile_options(wtf PRIVATE -fvisibility=hidden)
-    target_compile_options(wtf PRIVATE -fvisibility-inlines-hidden)
     set_target_properties(wtf PROPERTIES
         C_VISIBILITY_PRESET hidden
         CXX_VISIBILITY_PRESET hidden
