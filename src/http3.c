@@ -1226,6 +1226,15 @@ static wtf_frame_result_t wtf_http3_process_headers_frame(wtf_http3_stream* stre
             return processed ? WTF_FRAME_RESULT_SUCCESS : WTF_FRAME_RESULT_PROTOCOL_ERROR;
         }
 
+        if ((stream->flags & WTF_HTTP3_STREAM_FLAG_REQUEST_HEADERS) != 0) {
+            WTF_LOG_ERROR(stream->connection->context, "http3",
+                          "Second HEADERS frame on CONNECT stream %llu",
+                          (unsigned long long)stream->id);
+            wtf_http3_shutdown_connection(stream->connection, WTF_H3_FRAME_UNEXPECTED);
+            return WTF_FRAME_RESULT_PROTOCOL_ERROR;
+        }
+        stream->flags |= WTF_HTTP3_STREAM_FLAG_REQUEST_HEADERS;
+
         if (!wtf_http3_connect_processing_ready(stream->connection)) {
             return wtf_http3_queue_connect_headers(stream, data, length)
                 ? WTF_FRAME_RESULT_SUCCESS

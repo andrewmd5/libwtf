@@ -179,7 +179,10 @@ typedef enum {
 typedef enum {
     WTF_HTTP3_STREAM_FLAG_NONE = 0,
     WTF_HTTP3_STREAM_FLAG_CLIENT_CONNECT = 1u << 0,
-    WTF_HTTP3_STREAM_FLAG_CLIENT_CONNECT_SENT = 1u << 1
+    WTF_HTTP3_STREAM_FLAG_CLIENT_CONNECT_SENT = 1u << 1,
+    //! A server's request stream has had its request's HEADERS: a CONNECT stream carries only
+    //! DATA after them (RFC 9114, section 4.4).
+    WTF_HTTP3_STREAM_FLAG_REQUEST_HEADERS = 1u << 2
 } wtf_http3_stream_flags_t;
 
 typedef enum {
