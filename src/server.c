@@ -340,6 +340,10 @@ wtf_result_t wtf_server_create(wtf_context_t* context, const wtf_server_config_t
     if (config && config->enable_0rtt && !wtf_network_supports_early_data()) {
         return WTF_ERROR_NOT_SUPPORTED;
     }
+#elif !defined(QUIC_API_ENABLE_PREVIEW_FEATURES)
+    if (config->draft == WTF_WEBTRANSPORT_DRAFT_15) {
+        return WTF_ERROR_NOT_SUPPORTED;
+    }
 #endif
 
     ctx = context;

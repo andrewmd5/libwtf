@@ -69,8 +69,7 @@ typedef enum {
     WTF_SETTING_WT_INITIAL_MAX_STREAMS_BIDI = 0x2b65,
     WTF_SETTING_ENABLE_WEBTRANSPORT_DRAFT02 = 0x2b603742,
     WTF_SETTING_WEBTRANSPORT_MAX_SESSIONS_DRAFT07 = 0xc671706a,
-    WTF_SETTING_WT_ENABLED_DRAFT15 = 0x2c7cf000,
-    WTF_SETTING_WT_MAX_SESSIONS = 0x14e9cd29
+    WTF_SETTING_WT_ENABLED_DRAFT15 = 0x2c7cf000
 } wtf_h3_setting_t;
 
 #define WTF_QPACK_DYNAMIC_TABLE_SIZE 4096
@@ -83,6 +82,9 @@ typedef enum {
 #define WTF_WEBTRANSPORT_DRAFT02_REQUEST_VALUE "1"
 #define WTF_WEBTRANSPORT_DRAFT02_RESPONSE_HEADER "sec-webtransport-http3-draft"
 #define WTF_WEBTRANSPORT_DRAFT02_RESPONSE_VALUE "draft02"
+#define WTF_DRAFT02_DATAGRAM_FORMAT 0xff7c00
+#define WTF_DRAFT02_REGISTER_DATAGRAM 0xff37a2
+#define WTF_DRAFT02_DATAGRAM_CAPSULE 0xff37a5
 #define WTF_CONNECT_METHOD "CONNECT"
 #define WTF_HTTPS_SCHEME "https"
 
@@ -345,6 +347,7 @@ typedef struct wtf_http3_stream {
     uint8_t* pending_connect_header_block;
     size_t pending_connect_header_length;
     bool has_pending_connect_header_block;
+    bool draft02_datagrams_registered; // Protected by the connection's sessions mutex.
     struct wtf_http3_stream* next_client_pending_connect;
 
     uint64_t capsule_type;
@@ -359,12 +362,14 @@ typedef struct wtf_http3_stream {
 
 typedef struct wtf_session {
     atomic_uint ref_count;
+    atomic_bool draft02_datagrams_registered;
     bool destroyed;
     wtf_connection* connection;
     wtf_http3_stream* connect_stream;
     wtf_session_state_t state;
     uint64_t id;
     bool retired;
+    bool client_connect_started;
 
     wtf_session_callback_t callback;
     void* user_context;
@@ -477,6 +482,7 @@ typedef struct wtf_client {
     wtf_http3_stream* pending_connect_tail;
     uint32_t pending_connect_count;
     uint32_t opened_session_count;
+    uint32_t started_session_count;
 
     wtf_client_flags_t flags;
 

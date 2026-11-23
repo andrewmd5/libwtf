@@ -165,6 +165,14 @@ bool wtf_connection_uses_webtransport_flow_control(const wtf_connection* conn)
     return conn && conn->webtransport_flow_control_enabled;
 }
 
+bool wtf_connection_uses_original_draft02(const wtf_connection* conn)
+{
+    // AUTO and browser peers can use the RFC datagram format with draft-02 CONNECT.
+    return conn->selected_webtransport_draft == WTF_WEBTRANSPORT_DRAFT_02
+        && (conn->requested_webtransport_draft == WTF_WEBTRANSPORT_DRAFT_02
+            || !conn->peer_settings.h3_datagram_rfc_enabled);
+}
+
 static wtf_connection* wtf_connection_create_common(wtf_context* context, HQUIC quic_connection,
                                                     wtf_endpoint_role_t role,
                                                     wtf_webtransport_draft_t requested_draft,

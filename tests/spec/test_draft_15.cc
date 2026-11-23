@@ -13,6 +13,24 @@ protected:
     }
 };
 
+class Draft15ClientSpec : public Http3ClientSpecTest {};
+
+TEST_F(Draft15ClientSpec, OneConnectStartsWithoutFlowControl)
+{
+    auto* first = OpenSession();
+    auto* surplus = OpenSession();
+    ASSERT_NE(nullptr, first);
+    ASSERT_NE(nullptr, surplus);
+
+    ReceiveSettings({{0x2c7cf000, 1}, {0x08, 1}, {0x33, 1}});
+    ASSERT_TRUE(connection->peer_settings.settings_received);
+    EXPECT_EQ(2u, streams.size());
+    EXPECT_EQ(WTF_SESSION_HANDSHAKING, first->state);
+    EXPECT_EQ(WTF_SESSION_CLOSED, surplus->state);
+    EXPECT_EQ(std::vector<uint32_t>({WTF_ERROR_REJECTED}), session_errors);
+    EXPECT_EQ(nullptr, OpenSession(WTF_ERROR_REJECTED));
+}
+
 TEST_F(Draft15Spec, NonzeroSettingAndModernConnectEstablishSession)
 {
     ReceiveSettings({{0x2c7cf000, 2}, {0x33, 1}, {0x2b61, 63}, {0x2b64, 1}, {0x2b65, 3}});
@@ -74,6 +92,36 @@ TEST_F(Draft15Spec, PeerCreditAloneDoesNotEnableFlowControl)
     ReceiveSettings({{0x2c7cf000, 1}, {0x33, 1}, {0x2b65, 3}});
     ASSERT_TRUE(connection->peer_settings.settings_received);
     EXPECT_FALSE(connection->webtransport_flow_control_enabled);
+}
+
+TEST_F(Draft15Spec, OneSessionAllowedWithoutFlowControl)
+{
+    ReceiveSettings({{0x2c7cf000, 1}, {0x33, 1}});
+    ASSERT_TRUE(connection->peer_settings.settings_received);
+    auto& first = OpenStream(0);
+    Receive(first, Connect("webtransport-h3"));
+    ExpectResponse(first, 200);
+    auto& excess = OpenStream(4);
+    Receive(excess, Connect("webtransport-h3"));
+    EXPECT_EQ(std::vector<uint64_t>({0x10b}), excess.resets);
+    EXPECT_TRUE(connection_errors.empty());
+}
+
+TEST_F(Draft15Spec, RejectsLegacyConnectToken)
+{
+    ReceiveSettings({{0x2c7cf000, 1}, {0x33, 1}});
+    ASSERT_TRUE(connection->peer_settings.settings_received);
+    auto& request = OpenStream(0);
+    Receive(request, Connect("webtransport"));
+    ExpectResponse(request, 400);
+    EXPECT_EQ(nullptr, request.http3->webtransport_session);
+}
+
+TEST_F(Draft15Spec, ObsoleteSessionSettingDoesNotEnableDraft15)
+{
+    ReceiveSettings({{0x14e9cd29, 3}, {0x33, 1}});
+    EXPECT_FALSE(connection->peer_settings.settings_received);
+    EXPECT_EQ(WTF_WEBTRANSPORT_DRAFT_NONE, connection->selected_webtransport_draft);
 }
 
 } // namespace

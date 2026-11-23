@@ -32,7 +32,7 @@ typedef enum {
 static wtf_result_t wtf_http3_send_response(wtf_http3_stream* stream, uint16_t status_code,
                                             const wtf_connection_response_t* response);
 static wtf_result_t wtf_http3_flush_qpack_encoder_stream(wtf_connection* conn);
-static bool wtf_http3_client_start_connect_stream(wtf_http3_stream* stream);
+static wtf_result_t wtf_http3_client_start_connect_stream(wtf_http3_stream* stream);
 static wtf_result_t wtf_http3_client_send_connect_request(wtf_http3_stream* stream);
 static wtf_result_t wtf_session_establish(wtf_http3_stream* stream,
                                           const wtf_connect_response* response);
@@ -255,6 +255,7 @@ static bool wtf_http3_queue_connect_headers(wtf_http3_stream* stream, const uint
 
     if (!queued) {
         free(copy);
+        wtf_http3_abort_stream(stream, WTF_H3_REQUEST_REJECTED);
         return false;
     }
 
@@ -731,7 +732,8 @@ static bool wtf_http3_validate_settings(wtf_connection* conn)
             return true;
 
         case WTF_WEBTRANSPORT_DRAFT_02:
-            if (!conn->peer_settings.h3_datagram_enabled) {
+            if (wtf_connection_uses_original_draft02(conn)
+                && !conn->peer_settings.h3_datagram_draft04_enabled) {
                 WTF_LOG_TRACE(conn->context, "settings",
                               "H3 datagrams not enabled by draft-02 peer");
                 return false;
@@ -744,31 +746,16 @@ static bool wtf_http3_validate_settings(wtf_connection* conn)
     }
 }
 
-static bool wtf_http3_is_supported_webtransport_protocol(const char* protocol)
+static const char* wtf_http3_protocol_for_draft(wtf_webtransport_draft_t draft)
 {
-    return protocol
-        && (strcmp(protocol, WTF_WEBTRANSPORT_PROTOCOL_DRAFT15) == 0
-            || strcmp(protocol, WTF_WEBTRANSPORT_PROTOCOL_DRAFT02) == 0);
-}
-
-static bool wtf_http3_protocol_matches_selected_draft(const wtf_connection* conn,
-                                                      const char* protocol)
-{
-    if (!conn || !protocol) {
-        return false;
-    }
-
-    switch (conn->selected_webtransport_draft) {
+    switch (draft) {
         case WTF_WEBTRANSPORT_DRAFT_15:
-            return strcmp(protocol, WTF_WEBTRANSPORT_PROTOCOL_DRAFT15) == 0
-                || (conn->role == WTF_ENDPOINT_SERVER
-                    && strcmp(protocol, WTF_WEBTRANSPORT_PROTOCOL_DRAFT02) == 0);
+            return WTF_WEBTRANSPORT_PROTOCOL_DRAFT15;
         case WTF_WEBTRANSPORT_DRAFT_07:
         case WTF_WEBTRANSPORT_DRAFT_02:
-            return strcmp(protocol, WTF_WEBTRANSPORT_PROTOCOL_DRAFT02) == 0;
-        case WTF_WEBTRANSPORT_DRAFT_NONE:
+            return WTF_WEBTRANSPORT_PROTOCOL_DRAFT02;
         default:
-            return false;
+            return NULL;
     }
 }
 
@@ -848,8 +835,8 @@ static wtf_frame_result_t wtf_http3_process_settings_frame(wtf_http3_stream* str
     }
 
     stream->connection->selected_webtransport_draft = wtf_draft_select(
-        stream->connection->role, stream->connection->requested_webtransport_draft,
-        &stream->connection->peer_settings);
+        stream->connection->requested_webtransport_draft, &stream->connection->peer_settings,
+        stream->connection->reliable_reset_negotiated);
 
     if (!wtf_http3_validate_settings(stream->connection)) {
         WTF_LOG_ERROR(stream->connection->context, "settings",
@@ -1111,12 +1098,45 @@ static wtf_capsule_parse_result_t wtf_http3_parse_capsule(wtf_http3_stream* stre
     return WTF_CAPSULE_PARSE_NEED_MORE_DATA;
 }
 
+static bool wtf_http3_register_draft02_datagrams(wtf_http3_stream* stream,
+                                                const wtf_capsule* capsule)
+{
+    wtf_connection* conn = stream->connection;
+    bool draft02 = wtf_connection_uses_original_draft02(conn);
+    if (conn->peer_settings.settings_received && !draft02) {
+        return true;
+    }
+
+    size_t offset = 0;
+    uint64_t format = 0;
+    if (conn->role != WTF_ENDPOINT_SERVER || capsule->length == 0
+        || !wtf_varint_decode((size_t)capsule->length, capsule->data, &offset, &format)
+        || format != WTF_DRAFT02_DATAGRAM_FORMAT || offset != capsule->length) {
+        return !draft02;
+    }
+
+    mtx_lock(&conn->sessions_mutex);
+    stream->draft02_datagrams_registered = true;
+    session_map_itr itr = session_map_get(&conn->sessions, stream->id);
+    if (!session_map_is_end(itr)) {
+        atomic_store_explicit(&itr.data->val->draft02_datagrams_registered, true,
+                              memory_order_release);
+    }
+    mtx_unlock(&conn->sessions_mutex);
+    return true;
+}
+
 static wtf_frame_result_t wtf_http3_process_webtransport_capsules(
     wtf_http3_stream* stream, const uint8_t* data, size_t length)
 {
-    if (!stream->webtransport_session
-        || (stream->webtransport_session->state != WTF_SESSION_CONNECTED
-            && stream->webtransport_session->state != WTF_SESSION_DRAINING)) {
+    wtf_connection* conn = stream->connection;
+    wtf_session* session = stream->webtransport_session;
+    bool active = session && (session->state == WTF_SESSION_CONNECTED
+                              || session->state == WTF_SESSION_DRAINING);
+    bool waiting_for_draft02_session = !session && conn->role == WTF_ENDPOINT_SERVER
+        && (stream->flags & WTF_HTTP3_STREAM_FLAG_CONNECT_HEADERS_COMPLETE) != 0
+        && (!conn->peer_settings.settings_received || wtf_connection_uses_original_draft02(conn));
+    if (!active && !waiting_for_draft02_session) {
         return WTF_FRAME_RESULT_SUCCESS;
     }
 
@@ -1131,7 +1151,9 @@ static wtf_frame_result_t wtf_http3_process_webtransport_capsules(
         }
         offset += consumed;
         if (result == WTF_CAPSULE_PARSE_COMPLETE) {
-            bool processed = wtf_session_process_capsule(stream->webtransport_session, &capsule);
+            bool processed = capsule.type == WTF_DRAFT02_REGISTER_DATAGRAM
+                ? wtf_http3_register_draft02_datagrams(stream, &capsule)
+                : !active || wtf_session_process_capsule(session, &capsule);
             if (capsule.data && capsule.data != stream->capsule_inline) {
                 free(capsule.data);
             }
@@ -1311,28 +1333,6 @@ static wtf_frame_result_t wtf_http3_process_frames(
     return WTF_FRAME_RESULT_SUCCESS;
 }
 
-static const char* wtf_http3_protocol_for_draft(wtf_webtransport_draft_t draft)
-{
-    return draft == WTF_WEBTRANSPORT_DRAFT_15 ? WTF_WEBTRANSPORT_PROTOCOL_DRAFT15
-                                              : WTF_WEBTRANSPORT_PROTOCOL_DRAFT02;
-}
-
-static const char* wtf_http3_connect_protocol_for_connection(const wtf_connection* conn)
-{
-    if (!conn) {
-        return WTF_WEBTRANSPORT_PROTOCOL_DRAFT15;
-    }
-
-    if (conn->role == WTF_ENDPOINT_CLIENT
-        && conn->selected_webtransport_draft == WTF_WEBTRANSPORT_DRAFT_15
-        && conn->requested_webtransport_draft == WTF_WEBTRANSPORT_DRAFT_AUTO
-        && conn->peer_settings.enable_webtransport_draft02) {
-        return WTF_WEBTRANSPORT_PROTOCOL_DRAFT02;
-    }
-
-    return wtf_http3_protocol_for_draft(conn->selected_webtransport_draft);
-}
-
 static int wtf_http3_qpack_static_status_index(uint16_t status_code)
 {
     switch (status_code) {
@@ -1495,10 +1495,10 @@ static wtf_result_t wtf_http3_encode_connect_request(wtf_http3_stream* stream,
         conn, ":method", WTF_CONNECT_METHOD, enc_stream_buf, sizeof(enc_stream_buf),
         &enc_stream_total, header_block, sizeof(header_block), qpack_prefix_len,
         &header_payload_len);
+    const char* protocol = wtf_http3_protocol_for_draft(conn->selected_webtransport_draft);
     encode_ok = encode_ok && wtf_http3_qpack_encode_header_field(
-        conn, ":protocol", wtf_http3_connect_protocol_for_connection(conn), enc_stream_buf,
-        sizeof(enc_stream_buf), &enc_stream_total, header_block, sizeof(header_block),
-        qpack_prefix_len, &header_payload_len);
+        conn, ":protocol", protocol, enc_stream_buf, sizeof(enc_stream_buf), &enc_stream_total,
+        header_block, sizeof(header_block), qpack_prefix_len, &header_payload_len);
     encode_ok = encode_ok && wtf_http3_qpack_encode_header_field(
         conn, ":scheme", WTF_HTTPS_SCHEME, enc_stream_buf, sizeof(enc_stream_buf),
         &enc_stream_total, header_block, sizeof(header_block), qpack_prefix_len,
@@ -1625,6 +1625,19 @@ static bool wtf_http3_client_create_session_for_stream(wtf_http3_stream* stream)
     return true;
 }
 
+static uint32_t wtf_http3_session_limit(const wtf_connection* conn)
+{
+    if (conn->selected_webtransport_draft == WTF_WEBTRANSPORT_DRAFT_15
+        && !conn->webtransport_flow_control_enabled) {
+        return 1;
+    }
+    if (conn->selected_webtransport_draft == WTF_WEBTRANSPORT_DRAFT_07
+        && conn->role == WTF_ENDPOINT_CLIENT) {
+        return min(conn->max_sessions, conn->peer_settings.webtransport_max_sessions);
+    }
+    return conn->max_sessions;
+}
+
 wtf_result_t wtf_http3_client_open_session(wtf_client* client, wtf_session** out_session)
 {
     if (!client || !out_session) {
@@ -1646,6 +1659,11 @@ wtf_result_t wtf_http3_client_open_session(wtf_client* client, wtf_session** out
     if (client->opened_session_count >= conn->max_sessions) {
         mtx_unlock(&client->mutex);
         return WTF_ERROR_INVALID_STATE;
+    }
+    if ((client->flags & WTF_CLIENT_FLAG_TRANSPORT_READY) != 0
+        && client->started_session_count >= wtf_http3_session_limit(conn)) {
+        mtx_unlock(&client->mutex);
+        return WTF_ERROR_REJECTED;
     }
     client->opened_session_count++;
     mtx_unlock(&client->mutex);
@@ -1676,11 +1694,13 @@ wtf_result_t wtf_http3_client_open_session(wtf_client* client, wtf_session** out
     session->user_context = conn->user_context;
     stream->webtransport_session = session;
     wtf_session_add_ref(session);
+    // A callback can retire a queued session before wtf_client_open returns.
+    wtf_session_add_ref(session);
 
-    bool ready = false;
     mtx_lock(&client->mutex);
-    ready = (client->flags & WTF_CLIENT_FLAG_TRANSPORT_READY) != 0;
-    if (!ready) {
+    bool ready = (client->flags & WTF_CLIENT_FLAG_TRANSPORT_READY) != 0;
+    bool closing = client->state == WTF_CLIENT_CLOSING || client->state == WTF_CLIENT_CLOSED;
+    if (!ready && !closing) {
         stream->next_client_pending_connect = NULL;
         if (client->pending_connect_tail) {
             client->pending_connect_tail->next_client_pending_connect = stream;
@@ -1692,14 +1712,15 @@ wtf_result_t wtf_http3_client_open_session(wtf_client* client, wtf_session** out
     }
     mtx_unlock(&client->mutex);
 
-    if (ready && !wtf_http3_client_start_connect_stream(stream)) {
-        wtf_http3_client_fail_session(stream, WTF_ERROR_INTERNAL, "Failed to start CONNECT stream",
-                                      NULL);
-        wtf_http3_stream_destroy(stream);
-        return WTF_ERROR_INTERNAL;
+    if (ready || closing) {
+        wtf_result_t result = wtf_http3_client_start_connect_stream(stream);
+        if (result != WTF_SUCCESS) {
+            wtf_http3_stream_destroy(stream);
+            wtf_session_release(session);
+            return result;
+        }
     }
 
-    wtf_session_add_ref(session);
     *out_session = session;
     return WTF_SUCCESS;
 }
@@ -1744,13 +1765,29 @@ static wtf_result_t wtf_http3_client_send_connect_request(wtf_http3_stream* stre
     return WTF_SUCCESS;
 }
 
-static bool wtf_http3_client_start_connect_stream(wtf_http3_stream* stream)
+static wtf_result_t wtf_http3_client_start_connect_stream(wtf_http3_stream* stream)
 {
-    if (!stream || !stream->connection || !stream->connection->client) {
-        return false;
+    wtf_connection* conn = stream->connection;
+    wtf_client* client = conn->client;
+    mtx_lock(&client->mutex);
+    bool closing = client->state == WTF_CLIENT_CLOSING || client->state == WTF_CLIENT_CLOSED;
+    bool at_limit = client->started_session_count >= wtf_http3_session_limit(conn);
+    if (!closing && !at_limit) {
+        client->started_session_count++;
+        stream->webtransport_session->client_connect_started = true;
+    }
+    mtx_unlock(&client->mutex);
+    if (closing) {
+        wtf_http3_client_fail_session(stream, WTF_ERROR_CONNECTION_ABORTED,
+                                      "Connection shutdown", NULL);
+        return WTF_ERROR_CONNECTION_ABORTED;
+    }
+    if (at_limit) {
+        wtf_http3_client_fail_session(stream, WTF_ERROR_REJECTED,
+                                      "WebTransport session limit reached", NULL);
+        return WTF_ERROR_REJECTED;
     }
 
-    wtf_connection* conn = stream->connection;
     HQUIC quic_stream = NULL;
     QUIC_STATUS status = conn->context->quic_api->StreamOpen(
         conn->quic_connection, QUIC_STREAM_OPEN_FLAG_NONE, wtf_http3_stream_callback, stream,
@@ -1759,7 +1796,7 @@ static bool wtf_http3_client_start_connect_stream(wtf_http3_stream* stream)
         wtf_result_t result = wtf_quic_status_to_result(status);
         WTF_LOG_ERROR(conn->context, "connect", "Client CONNECT StreamOpen failed: 0x%x", status);
         wtf_http3_client_fail_session(stream, result, "CONNECT StreamOpen failed", NULL);
-        return false;
+        return result;
     }
 
     stream->quic_stream = quic_stream;
@@ -1770,10 +1807,10 @@ static bool wtf_http3_client_start_connect_stream(wtf_http3_stream* stream)
         WTF_LOG_ERROR(conn->context, "connect", "Client CONNECT StreamStart failed: 0x%x",
                       status);
         wtf_http3_client_fail_session(stream, result, "CONNECT StreamStart failed", NULL);
-        return false;
+        return result;
     }
 
-    return true;
+    return WTF_SUCCESS;
 }
 
 bool wtf_http3_client_drain_pending_connects(wtf_connection* conn)
@@ -1795,7 +1832,7 @@ bool wtf_http3_client_drain_pending_connects(wtf_connection* conn)
     while (head) {
         wtf_http3_stream* next = head->next_client_pending_connect;
         head->next_client_pending_connect = NULL;
-        if (!wtf_http3_client_start_connect_stream(head)) {
+        if (wtf_http3_client_start_connect_stream(head) != WTF_SUCCESS) {
             wtf_http3_stream_destroy(head);
         }
         head = next;
@@ -2059,6 +2096,17 @@ static wtf_result_t wtf_session_establish(wtf_http3_stream* stream,
     }
 
     wtf_session* session = stream->webtransport_session;
+    wtf_connection* conn = stream->connection;
+    if (conn->role == WTF_ENDPOINT_CLIENT && wtf_connection_uses_original_draft02(conn)) {
+        uint8_t body[8];
+        uint8_t* end = wtf_varint_encode(WTF_DRAFT02_DATAGRAM_FORMAT, body);
+        wtf_result_t result = wtf_session_send_capsule(
+            session, WTF_DRAFT02_REGISTER_DATAGRAM, body, (size_t)(end - body));
+        if (result != WTF_SUCCESS) {
+            return result;
+        }
+        atomic_store_explicit(&session->draft02_datagrams_registered, true, memory_order_release);
+    }
     mtx_lock(&session->streams_mutex);
     session->remote_max_streams_bidi = stream->connection->peer_settings.wt_initial_max_streams_bidi;
     session->remote_max_streams_uni = stream->connection->peer_settings.wt_initial_max_streams_uni;
@@ -2116,6 +2164,12 @@ static wtf_result_t wtf_http3_finish_connect_request(
     session->user_context = conn->user_context;
 
     mtx_lock(&conn->sessions_mutex);
+    if (session_map_size(&conn->sessions) >= wtf_http3_session_limit(conn)) {
+        mtx_unlock(&conn->sessions_mutex);
+        wtf_session_destroy(session);
+        wtf_http3_abort_stream(stream, WTF_H3_REQUEST_REJECTED);
+        return WTF_ERROR_REJECTED;
+    }
     session_map_itr itr = session_map_insert(&conn->sessions, session->id, session);
     if (session_map_is_end(itr)) {
         mtx_unlock(&conn->sessions_mutex);
@@ -2123,6 +2177,8 @@ static wtf_result_t wtf_http3_finish_connect_request(
         wtf_session_destroy(session);
         return wtf_http3_send_response(stream, 500, NULL);
     }
+    atomic_store_explicit(&session->draft02_datagrams_registered,
+                          stream->draft02_datagrams_registered, memory_order_release);
     mtx_unlock(&conn->sessions_mutex);
 
     stream->webtransport_session = session;
@@ -2174,9 +2230,10 @@ static bool wtf_http3_process_complete_connect_request(wtf_http3_stream* stream,
         goto cleanup;
     }
 
+    const char* protocol = wtf_http3_protocol_for_draft(conn->selected_webtransport_draft);
     if (!request->method || strcmp(request->method, WTF_CONNECT_METHOD) != 0
-        || !wtf_http3_is_supported_webtransport_protocol(request->protocol)
-        || !wtf_http3_protocol_matches_selected_draft(conn, request->protocol) || !request->scheme
+        || !protocol || !request->protocol || strcmp(request->protocol, protocol) != 0
+        || !request->scheme
         || strcmp(request->scheme, WTF_HTTPS_SCHEME) != 0 || !request->authority
         || request->authority[0] == '\0' || !request->path || request->path[0] == '\0') {
         WTF_LOG_ERROR(conn->context, "connect", "Invalid CONNECT request");
@@ -2188,6 +2245,14 @@ static bool wtf_http3_process_complete_connect_request(wtf_http3_stream* stream,
         WTF_LOG_ERROR(conn->context, "connect",
                       "Draft-02 WebTransport CONNECT request missing Origin");
         wtf_http3_send_response(stream, 400, NULL);
+        goto cleanup;
+    }
+
+    mtx_lock(&conn->sessions_mutex);
+    bool at_limit = session_map_size(&conn->sessions) >= wtf_http3_session_limit(conn);
+    mtx_unlock(&conn->sessions_mutex);
+    if (at_limit) {
+        wtf_http3_abort_stream(stream, WTF_H3_REQUEST_REJECTED);
         goto cleanup;
     }
 
@@ -2661,7 +2726,14 @@ static QUIC_STATUS wtf_handle_stream_shutdown_events(wtf_http3_stream* stream,
     }
 
     if (stream->webtransport_session && stream->webtransport_session->connect_stream == stream) {
-        wtf_session_shutdown(stream->webtransport_session, 0, "CONNECT stream closed");
+        if (Event->Type == QUIC_STREAM_EVENT_PEER_SEND_ABORTED
+            && Event->PEER_SEND_ABORTED.ErrorCode == WTF_H3_REQUEST_REJECTED
+            && (stream->flags & WTF_HTTP3_STREAM_FLAG_CLIENT_CONNECT) != 0
+            && stream->webtransport_session->state == WTF_SESSION_HANDSHAKING) {
+            wtf_http3_client_fail_session(stream, WTF_ERROR_REJECTED, "CONNECT stream rejected", NULL);
+        } else {
+            wtf_session_shutdown(stream->webtransport_session, 0, "CONNECT stream closed");
+        }
     }
 
     if (!complete) {

@@ -194,6 +194,27 @@ if(WTF_QUIC_BACKEND STREQUAL "network")
 elseif(WTF_USE_EXTERNAL_MSQUIC)
     find_package(msquic CONFIG REQUIRED)
     set(MSQUIC_LIBRARIES msquic)
+    get_target_property(MSQUIC_INCLUDE_DIRS msquic INTERFACE_INCLUDE_DIRECTORIES)
+
+    include(CheckCSourceCompiles)
+    include(CMakePushCheckState)
+    cmake_push_check_state(RESET)
+    set(CMAKE_REQUIRED_LIBRARIES msquic)
+    set(CMAKE_REQUIRED_DEFINITIONS -DQUIC_API_ENABLE_PREVIEW_FEATURES=1)
+    check_c_source_compiles([=[
+        #include <msquic.h>
+        int main(void) {
+            QUIC_SETTINGS settings = {0};
+            settings.IsSet.ReliableResetEnabled = 1;
+            return settings.IsSet.ReliableResetEnabled
+                && QUIC_CONNECTION_EVENT_RELIABLE_RESET_NEGOTIATED
+                && QUIC_PARAM_STREAM_RELIABLE_OFFSET;
+        }
+    ]=] WTF_MSQUIC_HAS_RELIABLE_RESET)
+    cmake_pop_check_state()
+    if(WTF_MSQUIC_HAS_RELIABLE_RESET)
+        add_compile_definitions(QUIC_API_ENABLE_PREVIEW_FEATURES=1)
+    endif()
 else()
     set(CMAKE_POLICY_DEFAULT_CMP0077 NEW)
     

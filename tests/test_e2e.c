@@ -33,12 +33,15 @@ typedef struct {
     atomic_int server_seen_auth_header;
     atomic_uint client_max_datagram_size;
     atomic_uint server_max_datagram_size;
+    atomic_uint echoed_drafts;
+    atomic_bool surplus_session_rejected;
     atomic_uintptr_t deferred_handle;
 } e2e_state_t;
 
 typedef struct {
     e2e_state_t* state;
     e2e_endpoint_t endpoint;
+    wtf_webtransport_draft_t draft;
 } e2e_callback_context_t;
 
 static void sleep_ms(unsigned milliseconds)
@@ -140,6 +143,25 @@ static wtf_connection_decision_t e2e_connection_validator(
         return WTF_CONNECTION_REJECT;
     }
     return WTF_CONNECTION_ACCEPT;
+}
+
+static void e2e_mixed_session_callback(const wtf_session_event_t* event)
+{
+    e2e_session_callback(event);
+    e2e_callback_context_t* context = event->user_context;
+    if (event->type == WTF_SESSION_EVENT_DATAGRAM_RECEIVED) {
+        const uint8_t* data = event->datagram_received.data;
+        uint32_t length = event->datagram_received.length;
+        if (context->endpoint == E2E_ENDPOINT_SERVER) {
+            wtf_session_send_datagram_copy(event->session, data, length);
+        } else if (length == 1 && data[0] == (uint8_t)context->draft) {
+            atomic_fetch_or(&context->state->echoed_drafts, 1u << context->draft);
+        }
+    } else if (context->endpoint == E2E_ENDPOINT_CLIENT && context->draft == WTF_WEBTRANSPORT_DRAFT_07
+               && event->type == WTF_SESSION_EVENT_DISCONNECTED
+               && event->disconnected.error_code == WTF_ERROR_REJECTED) {
+        atomic_store(&context->state->surplus_session_rejected, true);
+    }
 }
 
 static void e2e_log_callback(wtf_log_level_t level, const char* component, const char* file,
@@ -426,17 +448,120 @@ static int run_pooled_client(wtf_context_t* context, e2e_state_t* state, const c
     return failure;
 }
 
+static int run_mixed_clients(e2e_state_t* state, const char* url, const char* pinned_cert_file,
+                             const wtf_context_config_t* context_config)
+{
+    const wtf_webtransport_draft_t drafts[] = {
+        WTF_WEBTRANSPORT_DRAFT_02, WTF_WEBTRANSPORT_DRAFT_07, WTF_WEBTRANSPORT_DRAFT_15,
+    };
+    wtf_context_t* contexts[3] = {0};
+    wtf_client_t* clients[3] = {0};
+    wtf_session_t* sessions[3] = {0};
+    e2e_callback_context_t events[3] = {0};
+    wtf_session_t* surplus = NULL;
+    unsigned expected_drafts = 0;
+    int connected_target = 0;
+    int failure = 1;
+    for (size_t i = 0; i < sizeof(drafts) / sizeof(drafts[0]); i++) {
+        wtf_webtransport_draft_t draft = drafts[i];
+        events[i] = (e2e_callback_context_t){.state = state, .endpoint = E2E_ENDPOINT_CLIENT,
+                                            .draft = draft};
+        wtf_client_config_t config = {
+            .url = url,
+            .origin = draft == WTF_WEBTRANSPORT_DRAFT_02 ? WTF_E2E_ORIGIN : NULL,
+            .draft = draft,
+            .allow_pooling = true,
+            .require_unreliable = true,
+            .max_sessions_per_connection = 2,
+            .pinned_server_certificate_file = pinned_cert_file,
+            .session_callback = e2e_mixed_session_callback,
+            .user_context = &events[i],
+        };
+        wtf_result_t result = wtf_context_create(context_config, &contexts[i]);
+        if (result == WTF_SUCCESS) {
+            result = wtf_client_create(contexts[i], &config, &clients[i]);
+        }
+        if (draft == WTF_WEBTRANSPORT_DRAFT_15 && result == WTF_ERROR_NOT_SUPPORTED) {
+            puts("e2e: draft-15 unavailable on this QUIC backend");
+            continue;
+        }
+        if (result == WTF_SUCCESS) {
+            result = wtf_client_open(clients[i], &sessions[i]);
+        }
+        if (result != WTF_SUCCESS) {
+            fprintf(stderr, "e2e: draft-%02u client failed: %s\n", (unsigned)draft,
+                    wtf_result_to_string(result));
+            goto cleanup;
+        }
+        expected_drafts |= 1u << draft;
+        connected_target++;
+
+        if (draft == WTF_WEBTRANSPORT_DRAFT_07) {
+            result = wtf_client_open(clients[i], &surplus);
+            if (result == WTF_ERROR_REJECTED) {
+                atomic_store(&state->surplus_session_rejected, true);
+            } else if (result != WTF_SUCCESS) {
+                fprintf(stderr, "e2e: unexpected draft-07 surplus CONNECT result: %s\n",
+                        wtf_result_to_string(result));
+                goto cleanup;
+            }
+        }
+    }
+
+    if (wait_for_counts(state, connected_target, connected_target)) {
+        goto cleanup;
+    }
+
+    for (int attempt = 0; attempt < 100; attempt++) {
+        unsigned echoed = atomic_load(&state->echoed_drafts);
+        if (echoed == expected_drafts && atomic_load(&state->surplus_session_rejected)) {
+            break;
+        }
+        for (size_t i = 0; i < sizeof(drafts) / sizeof(drafts[0]); i++) {
+            uint8_t payload = (uint8_t)drafts[i];
+            if (sessions[i] && !(echoed & (1u << payload))) {
+                wtf_session_send_datagram_copy(sessions[i], &payload, sizeof(payload));
+            }
+        }
+        sleep_ms(50);
+    }
+
+    if (atomic_load(&state->echoed_drafts) != expected_drafts
+        || !atomic_load(&state->surplus_session_rejected)
+        || atomic_load(&state->client_connected) != connected_target
+        || atomic_load(&state->server_connected) != connected_target
+        || atomic_load(&state->server_disconnected) != 0) {
+        fprintf(stderr, "e2e: mixed-draft echo or draft-07 peer session limit failed\n");
+        goto cleanup;
+    }
+    failure = 0;
+
+cleanup:
+    wtf_session_unref(surplus);
+    for (size_t i = 0; i < sizeof(drafts) / sizeof(drafts[0]); i++) {
+        if (clients[i]) {
+            wtf_client_destroy(clients[i]);
+        }
+        wtf_session_unref(sessions[i]);
+        if (contexts[i]) {
+            wtf_context_destroy(contexts[i]);
+        }
+    }
+    return failure;
+}
+
 int main(int argc, char* argv[])
 {
     wtf_webtransport_draft_t draft = WTF_WEBTRANSPORT_DRAFT_AUTO;
+    bool mixed = argc == 2 && strcmp(argv[1], "mixed") == 0;
     if (argc == 2 && strcmp(argv[1], "02") == 0) {
         draft = WTF_WEBTRANSPORT_DRAFT_02;
     } else if (argc == 2 && strcmp(argv[1], "07") == 0) {
         draft = WTF_WEBTRANSPORT_DRAFT_07;
     } else if (argc == 2 && strcmp(argv[1], "15") == 0) {
         draft = WTF_WEBTRANSPORT_DRAFT_15;
-    } else if (argc != 1) {
-        fprintf(stderr, "usage: %s [02|07|15]\n", argv[0]);
+    } else if (argc != 1 && !mixed) {
+        fprintf(stderr, "usage: %s [02|07|15|mixed]\n", argv[0]);
         return 1;
     }
 
@@ -458,6 +583,8 @@ int main(int argc, char* argv[])
     atomic_init(&state.server_seen_auth_header, 0);
     atomic_init(&state.client_max_datagram_size, 0);
     atomic_init(&state.server_max_datagram_size, 0);
+    atomic_init(&state.echoed_drafts, 0);
+    atomic_init(&state.surplus_session_rejected, false);
     atomic_init(&state.deferred_handle, 0);
 
     e2e_callback_context_t server_events = {
@@ -488,21 +615,19 @@ int main(int argc, char* argv[])
         .port = WTF_E2E_PORT,
         .cert_config = &cert_config,
         .draft = draft,
-        .max_sessions_per_connection = 4,
+        .max_sessions_per_connection = mixed ? 1 : 4,
         .connection_validator = e2e_connection_validator,
-        .session_callback = e2e_session_callback,
+        .session_callback = mixed ? e2e_mixed_session_callback : e2e_session_callback,
         .user_context = &server_events,
     };
 
     wtf_server_t* server = NULL;
     result = wtf_server_create(context, &server_config, &server);
-#ifdef WTF_QUIC_BACKEND_NETWORK
     if (draft == WTF_WEBTRANSPORT_DRAFT_15 && result == WTF_ERROR_NOT_SUPPORTED) {
-        puts("e2e: draft-15 requires Network.framework support for reliable stream resets");
+        puts("e2e: draft-15 requires QUIC support for reliable stream resets");
         wtf_context_destroy(context);
         return 77;
     }
-#endif
     if (result != WTF_SUCCESS) {
         fprintf(stderr, "e2e: server create failed: %s\n", wtf_result_to_string(result));
         wtf_context_destroy(context);
@@ -520,14 +645,17 @@ int main(int argc, char* argv[])
     char url[128];
     snprintf(url, sizeof(url), "https://127.0.0.1:%u/", WTF_E2E_PORT);
 
-    int failure = run_dedicated_pinned_client(context, &state, url, cert_path,
-                                              WTF_CONNECTION_REJECT);
-    if (!failure) {
-        failure = run_dedicated_pinned_client(context, &state, url, cert_path,
-                                              WTF_CONNECTION_ACCEPT);
-    }
-    if (!failure) {
-        failure = run_pooled_client(context, &state, url, cert_path);
+    int failure;
+    if (mixed) {
+        failure = run_mixed_clients(&state, url, cert_path, &context_config);
+    } else {
+        failure = run_dedicated_pinned_client(context, &state, url, cert_path, WTF_CONNECTION_REJECT);
+        if (!failure) {
+            failure = run_dedicated_pinned_client(context, &state, url, cert_path, WTF_CONNECTION_ACCEPT);
+        }
+        if (!failure) {
+            failure = run_pooled_client(context, &state, url, cert_path);
+        }
     }
 
     wtf_server_stop(server);

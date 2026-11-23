@@ -10,9 +10,11 @@
 #include <vector>
 
 extern "C" {
+#include "client.h"
 #include "conn.h"
 #include "http3.h"
 #include "qpack.h"
+#include "session.h"
 #include "settings.h"
 #include "utils.h"
 #include "varint.h"
@@ -27,6 +29,7 @@ protected:
     struct Stream {
         Bytes sent;
         wtf_http3_stream* http3 = nullptr;
+        std::vector<uint64_t> resets;
     };
 
     QUIC_API_TABLE api = {};
@@ -39,7 +42,8 @@ protected:
     void SetUp() override
     {
         api.StreamClose = [](HQUIC) {};
-        api.StreamShutdown = [](HQUIC, QUIC_STREAM_SHUTDOWN_FLAGS, QUIC_UINT62) {
+        api.StreamShutdown = [](HQUIC handle, QUIC_STREAM_SHUTDOWN_FLAGS, QUIC_UINT62 code) {
+            reinterpret_cast<Stream*>(handle)->resets.push_back(code);
             return QUIC_STATUS_SUCCESS;
         };
         api.StreamSend = Send;
@@ -102,7 +106,18 @@ protected:
         }
         auto bytes = Frame(0x04, payload);
         bytes.insert(bytes.begin(), 0x00); // Control stream type.
-        Receive(OpenStream(2), std::move(bytes));
+        const uint64_t peer_control_id = connection->role == WTF_ENDPOINT_SERVER ? 2 : 3;
+        Receive(OpenStream(peer_control_id), std::move(bytes));
+    }
+
+    void ReceiveDatagram(Bytes bytes)
+    {
+        QUIC_BUFFER buffer = {static_cast<uint32_t>(bytes.size()), bytes.data()};
+        QUIC_CONNECTION_EVENT event = {};
+        event.Type = QUIC_CONNECTION_EVENT_DATAGRAM_RECEIVED;
+        event.DATAGRAM_RECEIVED.Buffer = &buffer;
+        EXPECT_EQ(QUIC_STATUS_SUCCESS,
+                  wtf_connection_callback(connection->quic_connection, connection, &event));
     }
 
     static Bytes Connect(std::string_view protocol, Fields fields = {})
@@ -182,5 +197,71 @@ private:
     static void QUIC_API Shutdown(HQUIC handle, QUIC_CONNECTION_SHUTDOWN_FLAGS, QUIC_UINT62 code)
     {
         reinterpret_cast<Http3SpecTest*>(handle)->connection_errors.push_back(code);
+    }
+};
+
+class Http3ClientSpecTest : public Http3SpecTest {
+protected:
+    wtf_client client = {};
+    std::vector<wtf_session_t*> client_sessions;
+    std::vector<uint32_t> session_errors;
+
+    void SetUp() override
+    {
+        Http3SpecTest::SetUp();
+        ASSERT_NE(nullptr, connection);
+        ASSERT_EQ(thrd_success, mtx_init(&client.mutex, mtx_plain));
+        if (cnd_init(&client.connected) != thrd_success) {
+            mtx_destroy(&client.mutex);
+            FAIL() << "Could not initialize the client condition variable";
+        }
+
+        connection->role = WTF_ENDPOINT_CLIENT;
+        connection->client = &client;
+        connection->session_callback = [](const wtf_session_event_t* event) {
+            if (event->type == WTF_SESSION_EVENT_DISCONNECTED) {
+                auto* test = static_cast<Http3ClientSpecTest*>(event->user_context);
+                test->session_errors.push_back(event->disconnected.error_code);
+            }
+        };
+        connection->user_context = this;
+        client.connection = connection;
+        client.state = WTF_CLIENT_CONNECTING;
+        client.config.allow_pooling = true;
+        api.StreamOpen = OpenClientStream;
+        api.StreamStart = [](HQUIC, QUIC_STREAM_START_FLAGS) { return QUIC_STATUS_SUCCESS; };
+    }
+
+    void TearDown() override
+    {
+        if (client.connection) {
+            wtf_client_fail_pending_sessions(&client, WTF_ERROR_CONNECTION_ABORTED, "test cleanup");
+        }
+        Http3SpecTest::TearDown();
+        for (auto* session : client_sessions) wtf_session_unref(session);
+        if (client.connection) {
+            cnd_destroy(&client.connected);
+            mtx_destroy(&client.mutex);
+        }
+    }
+
+    wtf_session_t* OpenSession(wtf_result_t expected = WTF_SUCCESS)
+    {
+        wtf_session_t* session = nullptr;
+        EXPECT_EQ(expected, wtf_http3_client_open_session(&client, &session));
+        if (session) client_sessions.push_back(session);
+        return session;
+    }
+
+private:
+    static QUIC_STATUS QUIC_API OpenClientStream(HQUIC handle, QUIC_STREAM_OPEN_FLAGS,
+                                                 QUIC_STREAM_CALLBACK_HANDLER, void* context,
+                                                 HQUIC* result)
+    {
+        auto* test = static_cast<Http3ClientSpecTest*>(reinterpret_cast<Http3SpecTest*>(handle));
+        auto& stream = test->streams.emplace_back();
+        stream.http3 = static_cast<wtf_http3_stream*>(context);
+        *result = reinterpret_cast<HQUIC>(&stream);
+        return QUIC_STATUS_SUCCESS;
     }
 };
