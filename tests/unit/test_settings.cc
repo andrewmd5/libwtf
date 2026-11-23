@@ -2,6 +2,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <optional>
 
 extern "C" {
 #include "settings.h"
@@ -32,7 +33,7 @@ uint8_t* AppendSetting(uint8_t* pos, uint64_t id, uint64_t value)
     return wtf_varint_encode(value, pos);
 }
 
-bool EncodedSettingsHasId(const uint8_t* frame, size_t frame_len, uint64_t expected_id)
+std::optional<uint64_t> EncodedSetting(const uint8_t* frame, size_t frame_len, uint64_t expected_id)
 {
     size_t offset = 0;
     uint64_t frame_type = 0;
@@ -40,11 +41,11 @@ bool EncodedSettingsHasId(const uint8_t* frame, size_t frame_len, uint64_t expec
 
     if (!wtf_varint_decode(frame_len, frame, &offset, &frame_type)
         || !wtf_varint_decode(frame_len, frame, &offset, &payload_len)) {
-        return false;
+        return std::nullopt;
     }
 
     if (frame_type != WTF_FRAME_SETTINGS || payload_len > frame_len - offset) {
-        return false;
+        return std::nullopt;
     }
 
     size_t end = offset + static_cast<size_t>(payload_len);
@@ -53,17 +54,32 @@ bool EncodedSettingsHasId(const uint8_t* frame, size_t frame_len, uint64_t expec
         uint64_t setting_value = 0;
         if (!wtf_varint_decode(end, frame, &offset, &setting_id)
             || !wtf_varint_decode(end, frame, &offset, &setting_value)) {
-            return false;
+            return std::nullopt;
         }
         if (setting_id == expected_id) {
-            return true;
+            return setting_value;
         }
     }
 
-    return false;
+    return std::nullopt;
+}
+
+bool EncodedSettingsHasId(const uint8_t* frame, size_t frame_len, uint64_t expected_id)
+{
+    return EncodedSetting(frame, frame_len, expected_id).has_value();
 }
 
 }  // namespace
+
+TEST(Settings, AdvertisesZeroQpackBlockedStreams)
+{
+    wtf_connection conn = MakeConnection();
+    uint8_t frame[512] = {};
+    size_t frame_len = 0;
+
+    ASSERT_TRUE(wtf_settings_encode_frame(&conn, frame, sizeof(frame), &frame_len));
+    EXPECT_EQ(0u, EncodedSetting(frame, frame_len, 0x07));
+}
 
 TEST(Settings, AutoAdvertisesAllSupportedDrafts)
 {
@@ -141,8 +157,8 @@ TEST(Settings, DecodesDraft15Settings)
     EXPECT_TRUE(conn.peer_settings.enable_webtransport_draft15);
     EXPECT_TRUE(conn.peer_settings.h3_datagram_rfc_enabled);
     EXPECT_EQ(conn.peer_settings.wt_initial_max_streams_bidi, 7u);
-    EXPECT_TRUE(conn.peer_settings.wt_initial_max_streams_bidi_received);
-    EXPECT_FALSE(conn.peer_settings.wt_initial_max_streams_uni_received);
+    EXPECT_EQ(conn.peer_settings.wt_initial_max_streams_uni, 0u);
+    EXPECT_EQ(conn.peer_settings.wt_initial_max_data, 0u);
 }
 
 TEST(Settings, DecodesDraft07Settings)

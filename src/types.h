@@ -74,7 +74,8 @@ typedef enum {
 } wtf_h3_setting_t;
 
 #define WTF_QPACK_DYNAMIC_TABLE_SIZE 4096
-#define WTF_QPACK_MAX_BLOCKED_STREAMS 100
+// The decoder does not resume a field section that waits for dynamic table entries.
+#define WTF_QPACK_MAX_BLOCKED_STREAMS 0
 
 #define WTF_WEBTRANSPORT_PROTOCOL_DRAFT15 "webtransport-h3"
 #define WTF_WEBTRANSPORT_PROTOCOL_DRAFT02 "webtransport"
@@ -258,9 +259,6 @@ typedef struct wtf_settings {
     uint64_t wt_initial_max_data;
     uint64_t wt_initial_max_streams_bidi;
     uint64_t wt_initial_max_streams_uni;
-    bool wt_initial_max_data_received;
-    bool wt_initial_max_streams_bidi_received;
-    bool wt_initial_max_streams_uni_received;
     bool h3_datagram_enabled;
     bool h3_datagram_rfc_enabled;
     bool h3_datagram_draft04_enabled;

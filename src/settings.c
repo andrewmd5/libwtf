@@ -15,9 +15,6 @@ void wtf_settings_init(wtf_settings* settings)
     settings->qpack_max_table_capacity = WTF_QPACK_DYNAMIC_TABLE_SIZE;
     settings->qpack_blocked_streams = WTF_QPACK_MAX_BLOCKED_STREAMS;
     settings->webtransport_max_sessions = WTF_DEFAULT_MAX_SESSIONS;
-    settings->wt_initial_max_data = 1ULL << 60;
-    settings->wt_initial_max_streams_bidi = 1ULL << 60;
-    settings->wt_initial_max_streams_uni = 1ULL << 60;
     settings->h3_datagram_enabled = false;
     settings->h3_datagram_rfc_enabled = false;
     settings->h3_datagram_draft04_enabled = false;
@@ -231,7 +228,6 @@ bool wtf_settings_decode_frame(wtf_connection* conn, const uint8_t* data, size_t
 
             case WTF_SETTING_WT_INITIAL_MAX_STREAMS_UNI:
                 conn->peer_settings.wt_initial_max_streams_uni = setting_value;
-                conn->peer_settings.wt_initial_max_streams_uni_received = true;
                 WTF_LOG_TRACE(conn->context, "http3",
                               "Peer WT initial max uni streams: %llu",
                               (unsigned long long)setting_value);
@@ -239,7 +235,6 @@ bool wtf_settings_decode_frame(wtf_connection* conn, const uint8_t* data, size_t
 
             case WTF_SETTING_WT_INITIAL_MAX_STREAMS_BIDI:
                 conn->peer_settings.wt_initial_max_streams_bidi = setting_value;
-                conn->peer_settings.wt_initial_max_streams_bidi_received = true;
                 WTF_LOG_TRACE(conn->context, "http3",
                               "Peer WT initial max bidi streams: %llu",
                               (unsigned long long)setting_value);
@@ -247,7 +242,6 @@ bool wtf_settings_decode_frame(wtf_connection* conn, const uint8_t* data, size_t
 
             case WTF_SETTING_WT_INITIAL_MAX_DATA:
                 conn->peer_settings.wt_initial_max_data = setting_value;
-                conn->peer_settings.wt_initial_max_data_received = true;
                 WTF_LOG_TRACE(conn->context, "http3", "Peer WT initial max data: %llu",
                               (unsigned long long)setting_value);
                 break;

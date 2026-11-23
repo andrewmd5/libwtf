@@ -539,6 +539,9 @@ bool wtf_session_process_capsule(wtf_session* session, const wtf_capsule* capsul
         }
 
         case WTF_CAPSULE_WT_MAX_DATA: {
+            if (!wtf_session_uses_flow_control(session)) {
+                return true;
+            }
             uint64_t max_data = 0;
             if (!wtf_session_decode_flow_control_value(session, capsule, &max_data)) {
                 wtf_session_fail_flow_control(session);
@@ -566,6 +569,9 @@ bool wtf_session_process_capsule(wtf_session* session, const wtf_capsule* capsul
 
         case WTF_CAPSULE_WT_MAX_STREAMS_BIDI:
         case WTF_CAPSULE_WT_MAX_STREAMS_UNI: {
+            if (!wtf_session_uses_flow_control(session)) {
+                return true;
+            }
             uint64_t max_streams = 0;
             if (!wtf_session_decode_flow_control_value(session, capsule, &max_streams)) {
                 wtf_session_fail_flow_control(session);
@@ -597,6 +603,9 @@ bool wtf_session_process_capsule(wtf_session* session, const wtf_capsule* capsul
         case WTF_CAPSULE_WT_DATA_BLOCKED:
         case WTF_CAPSULE_WT_STREAMS_BLOCKED_BIDI:
         case WTF_CAPSULE_WT_STREAMS_BLOCKED_UNI: {
+            if (!wtf_session_uses_flow_control(session)) {
+                return true;
+            }
             uint64_t blocked_at = 0;
             if (!wtf_session_decode_flow_control_value(session, capsule, &blocked_at)) {
                 wtf_session_fail_flow_control(session);

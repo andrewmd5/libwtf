@@ -677,6 +677,12 @@ bool wtf_http3_create_qpack_streams(wtf_connection* conn)
     return true;
 }
 
+static bool wtf_http3_has_initial_webtransport_credit(const wtf_settings* settings)
+{
+    return settings->wt_initial_max_data != 0 || settings->wt_initial_max_streams_bidi != 0
+        || settings->wt_initial_max_streams_uni != 0;
+}
+
 static bool wtf_http3_validate_settings(wtf_connection* conn)
 {
     if (!conn) {
@@ -705,28 +711,9 @@ static bool wtf_http3_validate_settings(wtf_connection* conn)
                 return false;
             }
 
-            bool has_all_flow_control = conn->peer_settings.wt_initial_max_data_received
-                && conn->peer_settings.wt_initial_max_streams_bidi_received
-                && conn->peer_settings.wt_initial_max_streams_uni_received;
-            bool has_any_flow_control = conn->peer_settings.wt_initial_max_data_received
-                || conn->peer_settings.wt_initial_max_streams_bidi_received
-                || conn->peer_settings.wt_initial_max_streams_uni_received;
-
-            if (!has_all_flow_control) {
-                if (conn->requested_webtransport_draft == WTF_WEBTRANSPORT_DRAFT_AUTO
-                    && !has_any_flow_control) {
-                    WTF_LOG_DEBUG(conn->context, "settings",
-                                  "Draft-15 peer omitted WT flow-control settings; "
-                                  "using transport stream and data limits");
-                    return true;
-                }
-
-                WTF_LOG_TRACE(conn->context, "settings",
-                              "Draft-15 peer missing required WT flow-control settings");
-                return false;
-            }
-
-            conn->webtransport_flow_control_enabled = true;
+            conn->webtransport_flow_control_enabled
+                = wtf_http3_has_initial_webtransport_credit(&conn->local_settings)
+                && wtf_http3_has_initial_webtransport_credit(&conn->peer_settings);
             return true;
         }
 
@@ -1128,7 +1115,8 @@ static wtf_frame_result_t wtf_http3_process_webtransport_capsules(
     wtf_http3_stream* stream, const uint8_t* data, size_t length)
 {
     if (!stream->webtransport_session
-        || stream->webtransport_session->state != WTF_SESSION_CONNECTED) {
+        || (stream->webtransport_session->state != WTF_SESSION_CONNECTED
+            && stream->webtransport_session->state != WTF_SESSION_DRAINING)) {
         return WTF_FRAME_RESULT_SUCCESS;
     }
 

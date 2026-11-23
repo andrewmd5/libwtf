@@ -15,6 +15,7 @@
 #endif
 
 #define WTF_E2E_PORT 44443
+#define WTF_E2E_ORIGIN "https://localhost"
 
 typedef enum {
     E2E_ENDPOINT_CLIENT,
@@ -22,6 +23,7 @@ typedef enum {
 } e2e_endpoint_t;
 
 typedef struct {
+    wtf_webtransport_draft_t draft;
     atomic_int client_connected;
     atomic_int client_disconnected;
     atomic_int server_connected;
@@ -116,6 +118,9 @@ static wtf_connection_decision_t e2e_connection_validator(
 {
     e2e_callback_context_t* callback_context = user_data;
     e2e_state_t* state = callback_context ? callback_context->state : NULL;
+    if (request && request->origin && strcmp(request->origin, WTF_E2E_ORIGIN) != 0) {
+        return WTF_CONNECTION_REJECT;
+    }
     if (!request || !has_header(request->headers, request->header_count,
                                 "authorization", "Bearer libwtf-e2e")) {
         return WTF_CONNECTION_ACCEPT;
@@ -308,7 +313,8 @@ static int run_dedicated_pinned_client(wtf_context_t* context, e2e_state_t* stat
     };
     wtf_client_config_t client_config = {
         .url = url,
-        .draft = WTF_WEBTRANSPORT_DRAFT_AUTO,
+        .origin = state->draft == WTF_WEBTRANSPORT_DRAFT_02 ? WTF_E2E_ORIGIN : NULL,
+        .draft = state->draft,
         .allow_pooling = false,
         .require_unreliable = true,
         .headers = headers,
@@ -364,7 +370,8 @@ static int run_pooled_client(wtf_context_t* context, e2e_state_t* state, const c
     };
     wtf_client_config_t client_config = {
         .url = url,
-        .draft = WTF_WEBTRANSPORT_DRAFT_AUTO,
+        .origin = state->draft == WTF_WEBTRANSPORT_DRAFT_02 ? WTF_E2E_ORIGIN : NULL,
+        .draft = state->draft,
         .allow_pooling = true,
         .require_unreliable = true,
         .pinned_server_certificate_file = pinned_cert_file,
@@ -419,8 +426,20 @@ static int run_pooled_client(wtf_context_t* context, e2e_state_t* state, const c
     return failure;
 }
 
-int main(void)
+int main(int argc, char* argv[])
 {
+    wtf_webtransport_draft_t draft = WTF_WEBTRANSPORT_DRAFT_AUTO;
+    if (argc == 2 && strcmp(argv[1], "02") == 0) {
+        draft = WTF_WEBTRANSPORT_DRAFT_02;
+    } else if (argc == 2 && strcmp(argv[1], "07") == 0) {
+        draft = WTF_WEBTRANSPORT_DRAFT_07;
+    } else if (argc == 2 && strcmp(argv[1], "15") == 0) {
+        draft = WTF_WEBTRANSPORT_DRAFT_15;
+    } else if (argc != 1) {
+        fprintf(stderr, "usage: %s [02|07|15]\n", argv[0]);
+        return 1;
+    }
+
     char cert_path[512];
     char key_path[512];
     if (make_cert_path(cert_path, sizeof(cert_path), "localhost.crt") != 0
@@ -429,6 +448,7 @@ int main(void)
     }
 
     e2e_state_t state;
+    state.draft = draft;
     atomic_init(&state.client_connected, 0);
     atomic_init(&state.client_disconnected, 0);
     atomic_init(&state.server_connected, 0);
@@ -467,7 +487,7 @@ int main(void)
         .host = "127.0.0.1",
         .port = WTF_E2E_PORT,
         .cert_config = &cert_config,
-        .draft = WTF_WEBTRANSPORT_DRAFT_AUTO,
+        .draft = draft,
         .max_sessions_per_connection = 4,
         .connection_validator = e2e_connection_validator,
         .session_callback = e2e_session_callback,
@@ -476,6 +496,13 @@ int main(void)
 
     wtf_server_t* server = NULL;
     result = wtf_server_create(context, &server_config, &server);
+#ifdef WTF_QUIC_BACKEND_NETWORK
+    if (draft == WTF_WEBTRANSPORT_DRAFT_15 && result == WTF_ERROR_NOT_SUPPORTED) {
+        puts("e2e: draft-15 requires Network.framework support for reliable stream resets");
+        wtf_context_destroy(context);
+        return 77;
+    }
+#endif
     if (result != WTF_SUCCESS) {
         fprintf(stderr, "e2e: server create failed: %s\n", wtf_result_to_string(result));
         wtf_context_destroy(context);
