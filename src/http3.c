@@ -240,11 +240,7 @@ static bool wtf_http3_queue_connect_headers(wtf_http3_stream* stream, const uint
 
     mtx_lock(&conn->streams_mutex);
     uint32_t pending_limit = wtf_http3_pending_connect_limit(conn);
-    if (stream->has_pending_connect_header_block) {
-        WTF_LOG_ERROR(conn->context, "connect",
-                      "Duplicate pending CONNECT headers on stream %llu",
-                      (unsigned long long)stream->id);
-    } else if (conn->pending_connect_count >= pending_limit) {
+    if (conn->pending_connect_count >= pending_limit) {
         WTF_LOG_WARN(conn->context, "connect",
                      "Pending CONNECT limit reached (%u) - rejecting stream %llu",
                      pending_limit, (unsigned long long)stream->id);
@@ -1186,6 +1182,7 @@ static wtf_frame_result_t wtf_http3_process_headers_frame(wtf_http3_stream* stre
             return processed ? WTF_FRAME_RESULT_SUCCESS : WTF_FRAME_RESULT_PROTOCOL_ERROR;
         }
 
+        stream->flags |= WTF_HTTP3_STREAM_FLAG_CONNECT_HEADERS_COMPLETE;
         if (!wtf_http3_connect_processing_ready(stream->connection)) {
             return wtf_http3_queue_connect_headers(stream, data, length)
                 ? WTF_FRAME_RESULT_SUCCESS
@@ -1219,6 +1216,8 @@ static uint64_t wtf_http3_check_frame_type(const wtf_http3_stream* stream, uint6
     const wtf_connection* conn = stream->connection;
     bool control = stream->type == WTF_STREAM_TYPE_CONTROL;
     bool settings_received = conn->peer_settings.settings_received;
+    bool connect_headers_complete = (stream->flags & WTF_HTTP3_STREAM_FLAG_CONNECT_HEADERS_COMPLETE)
+        != 0;
     if (control && !settings_received && type != WTF_FRAME_SETTINGS) {
         return WTF_H3_MISSING_SETTINGS;
     }
@@ -1233,10 +1232,12 @@ static uint64_t wtf_http3_check_frame_type(const wtf_http3_stream* stream, uint6
             return control && conn->role == WTF_ENDPOINT_SERVER
                 ? WTF_H3_NO_ERROR : WTF_H3_FRAME_UNEXPECTED;
         case WTF_FRAME_HEADERS:
+            return control || connect_headers_complete
+                ? WTF_H3_FRAME_UNEXPECTED : WTF_H3_NO_ERROR;
         case WTF_FRAME_DATA:
             return control ? WTF_H3_FRAME_UNEXPECTED : WTF_H3_NO_ERROR;
         case WTF_FRAME_PUSH_PROMISE:
-            return control || conn->role == WTF_ENDPOINT_SERVER
+            return control || conn->role == WTF_ENDPOINT_SERVER || connect_headers_complete
                 ? WTF_H3_FRAME_UNEXPECTED : WTF_H3_NO_ERROR;
         case 0x02: // PRIORITY
         case 0x06: // PING
@@ -1819,24 +1820,30 @@ static bool wtf_http3_process_connect_response(wtf_http3_stream* stream,
                                                wtf_connect_response* response)
 {
     if (!stream || !stream->connection || !stream->connection->client || !response
-        || !stream->webtransport_session) {
+        || !stream->webtransport_session
+        || stream->webtransport_session->state != WTF_SESSION_HANDSHAKING) {
         return false;
     }
 
     wtf_connection* conn = stream->connection;
-    if (!response->valid) {
+    if (!response->valid || response->status_code == 101) {
         wtf_http3_client_fail_session(stream, WTF_ERROR_PROTOCOL_VIOLATION,
                                       "Invalid CONNECT response", response);
         return false;
     }
 
-    if (response->status_code < 200 || response->status_code > 299) {
+    if (response->status_code < 200) {
+        return true;
+    }
+
+    if (response->status_code > 299) {
         WTF_LOG_WARN(conn->context, "connect", "WebTransport CONNECT rejected: HTTP %u",
                      response->status_code);
         wtf_http3_client_fail_session(stream, WTF_ERROR_REJECTED, "CONNECT rejected", response);
         return true;
     }
 
+    stream->flags |= WTF_HTTP3_STREAM_FLAG_CONNECT_HEADERS_COMPLETE;
     if (conn->selected_webtransport_draft == WTF_WEBTRANSPORT_DRAFT_02
         && (!response->draft_header
             || strcmp(response->draft_header, WTF_WEBTRANSPORT_DRAFT02_RESPONSE_VALUE) != 0)) {

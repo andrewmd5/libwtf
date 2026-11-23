@@ -82,6 +82,7 @@ protected:
     wtf_connection* conn = nullptr;
     std::vector<wtf_http3_stream*> connects;
     std::vector<wtf_stream*> children;
+    std::vector<uint64_t> connection_errors;
     uintptr_t next_handle = 1;
 
     void SetUp() override
@@ -102,6 +103,14 @@ protected:
     }
 
     HQUIC Handle() { return reinterpret_cast<HQUIC>(next_handle++); }
+
+    void CaptureConnectionErrors()
+    {
+        conn->quic_connection = reinterpret_cast<HQUIC>(&connection_errors);
+        api.ConnectionShutdown = [](HQUIC handle, QUIC_CONNECTION_SHUTDOWN_FLAGS, QUIC_UINT62 code) {
+            reinterpret_cast<std::vector<uint64_t>*>(handle)->push_back(code);
+        };
+    }
 
     wtf_http3_stream* Stream(uint64_t id)
     {
@@ -609,16 +618,11 @@ TEST_F(LifetimeRegression, QpackDecoderStreamCanArriveBeforeSettings)
 
 class CriticalStreamRegression : public LifetimeRegression {
 protected:
-    std::vector<uint64_t> connection_errors;
-
     void SetUp() override
     {
         LifetimeRegression::SetUp();
         ASSERT_NE(nullptr, conn);
-        conn->quic_connection = reinterpret_cast<HQUIC>(&connection_errors);
-        api.ConnectionShutdown = [](HQUIC handle, QUIC_CONNECTION_SHUTDOWN_FLAGS, QUIC_UINT62 code) {
-            reinterpret_cast<std::vector<uint64_t>*>(handle)->push_back(code);
-        };
+        CaptureConnectionErrors();
     }
 };
 
@@ -821,6 +825,66 @@ TEST_F(LifetimeRegression, FragmentedGreaseFrameKeepsBidirectionalStreamInHttp3)
     Receive(stream, std::vector<uint8_t>(frame + 1, end));
     EXPECT_NE(0u, stream->flags & WTF_HTTP3_STREAM_FLAG_BIDI_HTTP3);
     EXPECT_FALSE(stream->is_webtransport);
+}
+
+TEST_F(LifetimeRegression, QueuedConnectRequestRejectsAnotherHeadersFrame)
+{
+    CaptureConnectionErrors();
+    auto* stream = Stream(0);
+    Receive(stream, {WTF_FRAME_HEADERS, 2, 0, 0});
+    ASSERT_TRUE(stream->has_pending_connect_header_block);
+    ASSERT_EQ(1u, conn->pending_connect_count);
+    ASSERT_TRUE(connection_errors.empty());
+
+    Receive(stream, {WTF_FRAME_HEADERS});
+    EXPECT_EQ(std::vector<uint64_t>({WTF_H3_FRAME_UNEXPECTED}), connection_errors);
+    EXPECT_EQ(1u, conn->pending_connect_count);
+    EXPECT_EQ(0u, session_map_size(&conn->sessions));
+}
+
+TEST_F(LifetimeRegression, ClientConnectAcceptsInterimResponsesAndCompletesOnce)
+{
+    CaptureConnectionErrors();
+    auto* session = Session();
+    auto* stream = session->connect_stream;
+    session->state = WTF_SESSION_HANDSHAKING;
+    stream->flags = WTF_HTTP3_STREAM_FLAG_CLIENT_CONNECT;
+    ASSERT_TRUE(wtf_qpack_init_encoder(&context, &conn->qpack));
+
+    unsigned connected = 0;
+    session->user_context = &connected;
+    session->callback = [](const wtf_session_event_t* event) {
+        if (event->type == WTF_SESSION_EVENT_CONNECTED) {
+            EXPECT_EQ(200u, event->connected.status_code);
+            ++*static_cast<unsigned*>(event->user_context);
+        }
+    };
+
+    wtf_client client = {};
+    ASSERT_EQ(thrd_success, mtx_init(&client.mutex, mtx_plain));
+    conn->client = &client;
+    conn->role = WTF_ENDPOINT_CLIENT;
+    conn->selected_webtransport_draft = WTF_WEBTRANSPORT_DRAFT_07;
+
+    constexpr uint8_t early_hints = 0xc0 | LSQPACK_TNV_STATUS_103;
+    constexpr uint8_t ok = 0xc0 | LSQPACK_TNV_STATUS_200;
+    Receive(stream, {WTF_FRAME_HEADERS, 3, 0, 0, early_hints});
+    EXPECT_EQ(WTF_SESSION_HANDSHAKING, session->state);
+    EXPECT_EQ(0u, connected);
+    EXPECT_TRUE(connection_errors.empty());
+
+    Receive(stream, {WTF_FRAME_HEADERS, 3, 0, 0, early_hints,
+                     WTF_FRAME_HEADERS, 3, 0, 0, ok});
+    EXPECT_EQ(WTF_SESSION_CONNECTED, session->state);
+    EXPECT_EQ(1u, connected);
+    EXPECT_TRUE(connection_errors.empty());
+
+    Receive(stream, {WTF_FRAME_HEADERS});
+    EXPECT_EQ(std::vector<uint64_t>({WTF_H3_FRAME_UNEXPECTED}), connection_errors);
+    EXPECT_EQ(1u, connected);
+
+    conn->client = nullptr;
+    mtx_destroy(&client.mutex);
 }
 
 TEST_F(LifetimeRegression, QuicStreamAvailabilityDoesNotGrantWebTransportCredit)

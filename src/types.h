@@ -194,7 +194,9 @@ typedef enum {
     WTF_HTTP3_STREAM_FLAG_NONE = 0,
     WTF_HTTP3_STREAM_FLAG_CLIENT_CONNECT = 1u << 0,
     WTF_HTTP3_STREAM_FLAG_CLIENT_CONNECT_SENT = 1u << 1,
-    WTF_HTTP3_STREAM_FLAG_BIDI_HTTP3 = 1u << 2
+    WTF_HTTP3_STREAM_FLAG_BIDI_HTTP3 = 1u << 2,
+    // Set after request HEADERS on the server or a successful final response on the client.
+    WTF_HTTP3_STREAM_FLAG_CONNECT_HEADERS_COMPLETE = 1u << 3
 } wtf_http3_stream_flags_t;
 
 typedef enum {
