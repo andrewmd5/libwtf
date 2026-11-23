@@ -548,11 +548,7 @@ bool wtf_qpack_process_decoder(wtf_context* ctx, wtf_qpack_context* qpack, const
 
     mtx_lock(&qpack->mutex);
 
-    if (!qpack->initialized) {
-        WTF_LOG_ERROR(ctx, "qpack", "QPACK not initialized");
-        goto cleanup_unlock;
-    }
-
+    // The preinitialized encoder can receive stream cancellations before peer SETTINGS.
     int result = lsqpack_enc_decoder_in(&qpack->encoder, data, length);
     if (result != 0) {
         WTF_LOG_ERROR(ctx, "qpack", "Failed to process QPACK decoder input: %d", result);

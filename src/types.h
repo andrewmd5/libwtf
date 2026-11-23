@@ -420,9 +420,8 @@ typedef struct wtf_connection {
     wtf_http3_stream* control_stream;
     wtf_http3_stream* qpack_encoder_stream;
     wtf_http3_stream* qpack_decoder_stream;
-    wtf_http3_stream* peer_control_stream;
-    wtf_http3_stream* peer_encoder_stream;
-    wtf_http3_stream* peer_decoder_stream;
+    uint8_t peer_critical_stream_types; // Retained for the lifetime of the connection.
+    bool http3_failed;
     http3_stream_map streams;
     mtx_t streams_mutex;
 
